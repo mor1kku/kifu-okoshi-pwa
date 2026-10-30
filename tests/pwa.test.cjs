@@ -3,16 +3,20 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-test('新しい版は解析エンジンまで保存してから有効になる', async () => {
-  const handlers = {}; let cached;
-  const context = vm.createContext({ URL,
+test('新版の保存に旧HTTPキャッシュを混ぜず、エンジンと取得済みの一覧を保存する', async () => {
+  const handlers = {}; let cached, savedManifest; const freshManifest = {};
+  const context = vm.createContext({ URL, Request,
     self: { registration: { scope: 'https://example.github.io/kifu/' }, addEventListener: (type, action) => { handlers[type] = action; } },
-    fetch: async () => ({ ok: true, json: async () => ['python.zip', 'vendor/pyodide/pyodide.asm.wasm', 'vendor/pyodide/opencv.whl'] }),
-    caches: { open: async () => ({ addAll: async urls => { cached = urls; } }) },
+    fetch: async () => ({ ok: true, clone: () => freshManifest, json: async () => ['python.zip', 'vendor/pyodide/pyodide.asm.wasm', 'vendor/pyodide/opencv.whl'] }),
+    caches: { open: async () => ({ addAll: async requests => { cached = requests; }, put: async (url, response) => { savedManifest = { url, response }; } }) },
   });
   vm.runInContext(fs.readFileSync('pwa/sw.js', 'utf8'), context);
   let completed; handlers.install({ waitUntil(promise) { completed = promise; } }); await completed;
-  for (const path of ['python.zip', 'vendor/pyodide/pyodide.asm.wasm', 'vendor/pyodide/opencv.whl']) assert.ok(cached.includes('https://example.github.io/kifu/' + path));
+  for (const path of ['python.zip', 'vendor/pyodide/pyodide.asm.wasm', 'vendor/pyodide/opencv.whl']) assert.ok(cached.some(request => request.url === 'https://example.github.io/kifu/' + path));
+  assert.ok(cached.every(request => request.cache === 'reload'));
+  assert.ok(cached.every(request => !request.url.endsWith('/asset-manifest.json')));
+  assert.equal(savedManifest.url, 'https://example.github.io/kifu/asset-manifest.json');
+  assert.equal(savedManifest.response, freshManifest);
 });
 
 test('PWA更新が別のGitHub Pagesアプリのキャッシュを消さない', async () => {

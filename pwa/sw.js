@@ -7,10 +7,14 @@ self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const response = await fetch(url('asset-manifest.json'), { cache: 'no-store' });
     if (!response.ok) throw new Error('配布物の一覧を取得できません。');
+    const manifestResponse = response.clone();
     const assets = await response.json();
     const cache = await caches.open(cacheName);
     // エンジンも揃うまで新版を有効にしない。更新直後のオフライン起動を保つ。
-    await cache.addAll([...new Set([...shell, ...assets])].map(url));
+    const paths = [...new Set([...shell, ...assets])].filter(path => path !== 'asset-manifest.json');
+    // HTTPキャッシュの旧版が、新版の保存一覧やスクリプトに混ざることを防ぐ。
+    await cache.addAll(paths.map(path => new Request(url(path), { cache: 'reload' })));
+    await cache.put(url('asset-manifest.json'), manifestResponse);
   })());
 });
 self.addEventListener('activate', event => {
