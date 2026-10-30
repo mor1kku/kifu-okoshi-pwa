@@ -5,7 +5,7 @@ from zipfile import ZipFile, ZIP_DEFLATED
 
 rootDir = Path(__file__).resolve().parents[1]
 siteDir = rootDir / 'dist-pwa'
-names = json.loads((siteDir / 'asset-manifest.json').read_text(encoding='utf-8')) + ['asset-manifest.json', 'sw.js']
+names = json.loads((siteDir / 'asset-manifest.json').read_text(encoding='utf-8')) + ['asset-manifest.json', 'sw.js', '.nojekyll']
 outputDir = rootDir / 'outputs'
 outputDir.mkdir(exist_ok=True)
 target = outputDir / 'kifu-okoshi-pwa-pages.zip'

@@ -121,7 +121,7 @@ with zipfile.ZipFile(outputDir / 'corresponding-source.zip', 'w', zipfile.ZIP_DE
     for path in sorted(set(sourceFiles)):
         archive.write(path, path.relative_to(rootDir).as_posix())
     archive.write(outputDir / 'licenses/python-shogi.txt', 'licenses/python-shogi.txt')
-files = sorted(path.relative_to(outputDir).as_posix() for path in outputDir.rglob('*') if path.is_file() and path.name not in ('sw.js', 'asset-manifest.json'))
+files = sorted(path.relative_to(outputDir).as_posix() for path in outputDir.rglob('*') if path.is_file() and path.name not in ('sw.js', 'asset-manifest.json', '.nojekyll'))
 digest = hashlib.sha256()
 for name in files:
     digest.update(name.encode()); digest.update((outputDir / name).read_bytes())
@@ -136,4 +136,4 @@ if siteDir.is_symlink() or siteDir.resolve() != rootDir / 'dist-pwa':
 if siteDir.exists():
     siteDir.rename(buildCacheDir / ('previous-' + uuid.uuid4().hex))
 outputDir.rename(siteDir)
-print(f'dist-pwa: {len(files) + 2} files, {total / 1024 / 1024:.1f} MiB. 動画・正解棋譜・APIサーバーは含みません。')
+print(f'dist-pwa: {len(files) + 3} files, {total / 1024 / 1024:.1f} MiB. 動画・正解棋譜・APIサーバーは含みません。')
