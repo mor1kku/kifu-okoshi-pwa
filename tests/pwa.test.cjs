@@ -81,7 +81,7 @@ test('デコード中断時も次に読む時刻をチェックポイントへ�
     self: { postMessage: value => messages.push(value) },
     loadPyodide: async () => ({ loadPackage: async () => {}, unpackArchive() {}, runPython() {}, globals: { get: () => fakeBridge } }),
     fetch: async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(0) }),
-    VideoDecoder: class {}, OffscreenCanvas: class {}, ALL_FORMATS: [], BlobSource: class {},
+    VideoDecoder: class {}, OffscreenCanvas: class { getContext() { return { drawImage() {}, getImageData: () => ({ data: new Uint8Array(72 * 72 * 4) }) }; } }, ALL_FORMATS: [], BlobSource: class {},
     Input: class { getPrimaryVideoTrack() { return { canDecode: async () => true }; } dispose() {} },
     CanvasSink: class { getCanvas() { return { canvas, timestamp: 0 }; } async *canvases() { yield { canvas, timestamp: .1 }; yield { canvas, timestamp: .2 }; throw new Error('decode interrupted'); } },
   });
@@ -91,4 +91,22 @@ test('デコード中断時も次に読む時刻をチェックポイントへ�
   const saved = messages.filter(message => message.type === 'checkpoint').at(-1);
   assert.equal(saved.checkpoint.lastTime, .2);
   assert.ok(Math.abs(saved.nextSample - (.2 + 1 / 12 - .5 / 30)) < 1e-10);
+});
+
+test('短い局面を予定時刻より前でも読み、変化後の確認フレームも省かない', () => {
+  let probe = new Uint8Array(72 * 72 * 4).fill(220);
+  const context = vm.createContext({ URL, Uint8Array, self: {},
+    OffscreenCanvas: class { getContext() { return { drawImage() {}, getImageData: () => ({ data: new Uint8Array(probe) }) }; } },
+  });
+  const source = fs.readFileSync('pwa/worker.js', 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/import\.meta\.url/g, "'https://example.github.io/kifu/worker.js'");
+  vm.runInContext(source + '\nglobalThis.sampler = new MotionSampler();', context);
+  const sample = () => context.sampler.shouldRead({ canvas: { width: 396, height: 438 } }, { x: 0, y: 0, width: 1, height: 1 }, false);
+  for (let n = 0; n < 4; n++) assert.equal(sample(), true);
+  assert.equal(sample(), false);
+  for (let n = 0; n < 6; n++) {
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) for (let c = 0; c < 3; c++) probe[(y * 72 + x) * 4 + c] = n % 2 ? 220 : 20;
+    assert.equal(sample(), true);
+  }
+  for (let n = 0; n < 3; n++) assert.equal(sample(), true);
+  assert.equal(sample(), false);
 });

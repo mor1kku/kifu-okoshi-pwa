@@ -1,9 +1,11 @@
 import cv2
+import json
 import numpy as np
 import pytest
 import shogi
 from pathlib import Path
-from backend.recognition import GenericAdapter, WarsAdapter, MoveTracker, analyzeVideo, extractCells
+from backend.records import replayMoves
+from backend.recognition import FrameRecognizer, GenericAdapter, WarsAdapter, MoveTracker, analyzeVideo, extractCells
 
 
 def renderBoard(board):
@@ -22,8 +24,8 @@ def renderBoard(board):
     return image
 
 
-def makeVideo(path, holdFrames, rotated=False):
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), 30, (396, 438))
+def makeVideo(path, holdFrames, rotated=False, fps=30):
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*'mp4v'), fps, (396, 438))
     assert writer.isOpened()
     moves = ['7g7f', '3c3d', '2g2f', '8c8d', '2f2e', '8d8e']
     board = shogi.Board()
@@ -108,6 +110,132 @@ def testWarsTransientMoveDoesNotBecomeARecord():
     assert tracker.moves == []
     tracker.observe(adapter.features(extractCells(renderBoard(shogi.Board()), box)), .2)
     assert tracker.moves == []
+
+
+@pytest.mark.parametrize('fps,holdFrames,sampleFps', [(60, 2, 12), (60, 1, 12), (120, 2, 12), (30, 2, 6)])
+def testFastVideoKeepsBriefPositions(tmp_path, fps, holdFrames, sampleFps):
+    path = tmp_path / 'fast.mp4'
+    expected = makeVideo(path, holdFrames, fps=fps)
+    result = analyzeVideo(path, {'startTime': 0, 'endTime': None, 'sampleFps': sampleFps,
+                                'profile': 'wars', 'orientation': 'sente',
+                                'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}})
+    # 最後の局面は二回確認できる動画で全手を、1フレーム版は最後の未確定手までを確認する。
+    assert [row['usi'] for row in result['moves']] == (expected if holdFrames >= 2 else expected[:-1])
+
+
+def testOneFramePositionsAfterThirdMoveDoNotLeaveTrackerBehind():
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'sampleFps': 12, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    moves = ['7g7f', '3c3d', '2g2f', '8c8d', '2f2e', '8d8e']
+    time = 0
+    for index, usi in enumerate(moves):
+        board.push_usi(usi)
+        for _ in range(3 if index < 3 or index == len(moves) - 1 else 1):
+            time += 1 / 60
+            core.feed(renderBoard(board), time)
+    assert [row['usi'] for row in core.result()['moves']] == moves
+    assert not core.result()['recognitionIncomplete']
+
+
+def testMissingPositionsAreReportedInsteadOfInventingMoves():
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'sampleFps': 12, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    moves = ['7g7f', '3c3d', '2g2f', '8c8d', '2f2e', '8d8e']
+    time = 0
+    for index, usi in enumerate(moves):
+        board.push_usi(usi)
+        if index in (3, 4):
+            continue
+        for _ in range(6):
+            time += .1
+            core.feed(renderBoard(board), time)
+    assert [row['usi'] for row in core.result()['moves']] == moves[:3]
+    assert core.result()['recognitionIncomplete']
+    assert FrameRecognizer.restore(core.checkpoint()).result()['recognitionIncomplete']
+    # 終了画面で盤が隠れても、その前に判明した読み取り不足を消さない。
+    core.feed(np.full((438, 396, 3), 225, dtype=np.uint8), time + .1)
+    assert core.result()['recognitionIncomplete']
+
+
+def dropPosition():
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'sampleFps': 12, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    prefix = ['7g7f', '3c3d', '8h2b', '3a2b']
+    for usi in prefix:
+        board.push_usi(usi)
+    core.tracker.board = shogi.Board(board.sfen())
+    core.tracker.moves = replayMoves(prefix)
+    core.tracker.refreshMoves()
+    return core, board, prefix
+
+
+@pytest.mark.parametrize('resume', [False, True])
+def testBriefDropAndReplyAreNotCollapsedIntoAnotherDrop(resume):
+    core, board, prefix = dropPosition()
+    moves = ['B*5e', '4c4d', '5e4f']
+    time = 0
+    for index, usi in enumerate(moves):
+        board.push_usi(usi)
+        for _ in range(6 if index == 2 else 1):
+            time += 1 / 60
+            core.feed(renderBoard(board), time)
+            if resume:
+                core = FrameRecognizer.restore(json.loads(json.dumps(core.checkpoint())))
+    assert [row['usi'] for row in core.result()['moves']] == prefix + moves
+    assert core.result()['moves'][len(prefix)]['review']
+    assert not core.result()['recognitionIncomplete']
+
+
+def testTwoFrameDropAnimationIsNotSavedAsAMove():
+    core, board, prefix = dropPosition()
+    original = renderBoard(board)
+    board.push_usi('B*5e')
+    core.feed(renderBoard(board), .1)
+    board.push_usi('4c4d')
+    core.feed(renderBoard(board), .2)
+    assert core.tracker.provisionalDrop is not None
+    assert [row['usi'] for row in core.result()['moves']] == prefix
+    assert core.result()['recognitionIncomplete']
+    core = FrameRecognizer.restore(core.checkpoint())
+    core.feed(original, .3)
+    assert [row['usi'] for row in core.result()['moves']] == prefix
+    assert core.tracker.provisionalDrop is None
+
+
+def testDropWithoutUniqueReplyStillNeedsThreeFrames():
+    core, board, prefix = dropPosition()
+    board.push_usi('B*5e')
+    core.feed(renderBoard(board), .1)
+    core.feed(renderBoard(board), .2)
+    assert [row['usi'] for row in core.result()['moves']] == prefix
+    assert core.tracker.provisionalDrop is None
+    core.feed(renderBoard(board), .3)
+    assert [row['usi'] for row in core.result()['moves']] == prefix + ['B*5e']
+
+
+@pytest.mark.parametrize('resume', [False, True])
+def testRealDropRecoversAfterAnAnimatedReply(resume):
+    core, board, prefix = dropPosition()
+    board.push_usi('B*5e')
+    actualDrop = renderBoard(board)
+    core.feed(actualDrop, .1)
+    board.push_usi('4c4d')
+    core.feed(renderBoard(board), .2)
+    assert core.tracker.provisionalDrop is not None
+    if resume:
+        core = FrameRecognizer.restore(json.loads(json.dumps(core.checkpoint())))
+    board.pop()
+    core.feed(actualDrop, .3)
+    assert core.tracker.provisionalDrop is None
+    assert [row['usi'] for row in core.result()['moves']] == prefix + ['B*5e']
+    board.push_usi('5c5d')
+    for time in [.4, .5, .6]:
+        core.feed(renderBoard(board), time)
+    assert [row['usi'] for row in core.result()['moves']] == prefix + ['B*5e', '5c5d']
+    assert not core.result()['recognitionIncomplete']
 
 
 @pytest.mark.skipif(not (Path(__file__).parent / 'fixtures' / 'wars-silver-drop.npz').exists(), reason='実動画由来の非公開fixtureが必要です')

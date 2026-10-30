@@ -36,7 +36,7 @@
           <button id="useFrame" class="secondary compact" disabled>表示中のフレームを開始位置に</button>
           <details><summary>読み取り・盤面の詳細設定</summary>
             <label class="field-label" for="endTime">終了時刻（秒・空欄で最後まで）</label><input id="endTime" type="number" min="0" step="0.1" placeholder="動画の最後まで">
-            <label class="field-label" for="sampleFps">読み取り密度</label><select id="sampleFps"><option value="6">6 fps — ゆっくりした動画</option><option value="12" selected>12 fps — 標準</option><option value="30">30 fps — 速い動画</option><option value="60">60 fps — 全フレーム優先</option></select>
+            <label class="field-label" for="sampleFps">読み取り密度</label><select id="sampleFps"><option value="6">6 fps — 軽量</option><option value="12" selected>12 fps — 標準</option><option value="30">30 fps — 細かく確認</option><option value="60">60 fps — 全フレーム優先</option></select><p class="field-help">将棋ウォーズは、どの設定でも盤面が変わる区間を自動で細かく読み取ります。</p>
             <p class="field-help">再生速度ではなく映像内の変化を追います。局面が欠けた動画は復元できないことがあります。</p>
             <div class="box-fields"><label>X<input id="boxX" type="number" min="0" max="1" step="0.001"></label><label>Y<input id="boxY" type="number" min="0" max="1" step="0.001"></label><label>幅<input id="boxWidth" type="number" min="0.05" max="1" step="0.001"></label><label>高さ<input id="boxHeight" type="number" min="0.05" max="1" step="0.001"></label></div>
             <p class="field-help">画像全体を1とした比率。プレビュー上でもドラッグできます。</p>

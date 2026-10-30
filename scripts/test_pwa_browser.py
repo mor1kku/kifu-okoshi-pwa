@@ -20,6 +20,7 @@ parser.add_argument('--resume', action='store_true')
 parser.add_argument('--serve', action='store_true')
 parser.add_argument('--port', type=int, default=8002)
 parser.add_argument('--offline', action='store_true')
+parser.add_argument('--settings', help='任意動画を検証する盤面設定JSON')
 args = parser.parse_args()
 rootDir = Path(__file__).resolve().parents[1]
 outputDir = rootDir / '.local' / 'pwa-validation'
@@ -55,6 +56,12 @@ with sync_playwright() as p:
         page.locator('#videoFile').set_input_files(str(rootDir / args.video))
         page.locator('#analyzeButton').wait_for(state='visible')
         page.wait_for_function("!document.getElementById('analyzeButton').disabled", timeout=60000)
+        if args.settings:
+            settingsPath = rootDir / args.settings
+            settings = json.loads(settingsPath.read_text(encoding='utf-8'))
+            page.locator('#profileFile').set_input_files(str(settingsPath))
+            page.wait_for_function("document.getElementById('notice').textContent.includes('盤面設定を読み込みました')")
+            page.locator('#startTime').fill(str(settings.get('startTime', 0)))
         page.locator('details').filter(has=page.locator('#endTime')).locator('summary').click()
         page.locator('#endTime').fill('' if args.full else str(args.end))
         page.locator('#analyzeButton').click()
@@ -104,7 +111,7 @@ with sync_playwright() as p:
         page.screenshot(path=str(outputDir / 'pwa-mobile.png'), full_page=True)
         with page.expect_download() as download:
             page.locator('#downloadKif').click()
-        kifPath = outputDir / 'recognized.kif'; download.value.save_as(kifPath)
+        kifPath = outputDir / (Path(args.video).stem + '-recognized.kif'); download.value.save_as(kifPath)
         assert parseRecord(decodeRecord(kifPath.read_bytes()))['moves'] == predicted
         if args.offline:
             # オフラインのまま合法性検証・比較・結果復元まで使えることを確かめる。
@@ -119,7 +126,8 @@ with sync_playwright() as p:
             page.locator('.compare-details summary').click()
             page.locator('#referenceFile').set_input_files(str(rootDir / args.reference))
             page.wait_for_function("document.getElementById('comparison').textContent.length > 0", timeout=30000)
-            assert f'冒頭から{len(predicted)}手連続一致' in page.locator('#comparison').inner_text()
+            comparison = page.locator('#comparison').inner_text()
+            assert f'冒頭から{len(predicted)}手連続一致' in comparison or f'全{len(predicted)}手が完全一致' in comparison
             page.reload(); page.wait_for_load_state('networkidle')
             page.wait_for_function("!document.getElementById('resultBody').hidden", timeout=30000)
             assert page.locator('#moveCount').inner_text() == f'{len(predicted)} 手'

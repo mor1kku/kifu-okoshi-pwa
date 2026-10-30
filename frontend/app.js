@@ -216,7 +216,7 @@ async function pollJob() {
     if (['complete', 'cancelled'].includes(job.status)) {
       setBusy(false); $('cancelButton').disabled = true;
       state.result = job.result; restoreSettings(job.result.settings); renderResult();
-      notice(job.status === 'cancelled' ? (localEngine ? '途中まで保存しました。「途中から再開」で続けられます。' : '途中までの結果を保存しました。確認後、設定を変えて再解析できます。') : '解析が終わりました。指し手を選び、映像と照合してください。'); return;
+      notice(job.status === 'cancelled' ? (localEngine ? '途中まで保存しました。「途中から再開」で続けられます。' : '途中までの結果を保存しました。確認後、設定を変えて再解析できます。') : job.result.recognitionIncomplete ? `${job.result.moves.length}手以降で映像に追従できていない可能性があります。結果の注意事項を確認してください。` : '解析が終わりました。指し手を選び、映像と照合してください。', Boolean(job.result.recognitionIncomplete)); return;
     }
     pollTimer = setTimeout(pollJob, 1000);
   } catch (error) {
@@ -271,7 +271,7 @@ function renderResult() {
   $('savedResult').textContent = `保存済みの解析を開く（${result.moves.length}手${result.cancelled ? '・途中' : ''}）`;
   $('resultBody').hidden = false; $('emptyResult').hidden = true; $('moveCount').textContent = `${result.moves.length} 手`;
   const reviewCount = result.moves.filter((row) => row.review).length;
-  $('resultSummary').textContent = `${result.moves.length}手を抽出 · 要確認 ${reviewCount}手${result.edited ? ' · 修正済み' : ''}${result.cancelled ? ' · 途中停止' : ''}。終局理由は映像で確認してください。`;
+  $('resultSummary').textContent = `${result.moves.length}手を抽出 · 要確認 ${reviewCount}手${result.edited ? ' · 修正済み' : ''}${result.cancelled ? ' · 途中停止' : ''}${result.recognitionIncomplete ? ' · 読み取り不足の可能性' : ''}。終局理由は映像で確認してください。`;
   $('moveList').replaceChildren(...result.moves.map((row, index) => {
     const button = document.createElement('button'); button.className = 'move-row'; button.dataset.index = index;
     for (const [className, value] of [['move-number', row.number], ['', (index % 2 ? '△ ' : '▲ ') + row.label], ['move-time', formatTime(row.time)], ['review-mark', row.review ? '!' : '']]) { const span = document.createElement('span'); span.className = className; span.textContent = value; button.append(span); }

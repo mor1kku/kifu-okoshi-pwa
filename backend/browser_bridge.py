@@ -42,11 +42,11 @@ def bridgeCall(method, payload, pixels=None):
             recognizer = FrameRecognizer(value['settings'], frame)
         else:
             recognizer.feed(frame, value['time'])
-        result = {'moveCount': len(recognizer.tracker.moves), 'lastTime': recognizer.lastTime}
+        result = {'moveCount': recognizer.moveCount(), 'lastTime': recognizer.lastTime}
     elif method == 'restore':
         validateSettings(value['settings'])
         recognizer = FrameRecognizer.restore(value)
-        result = {'moveCount': len(recognizer.tracker.moves), 'lastTime': recognizer.lastTime}
+        result = {'moveCount': recognizer.moveCount(), 'lastTime': recognizer.lastTime}
     elif method == 'snapshot':
         result = recognizer.result(value.get('elapsedSeconds', 0), value.get('cancelled', False))
         result['kif'] = exportRecord([row['usi'] for row in result['moves']])

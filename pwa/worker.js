@@ -40,8 +40,7 @@ async function probe(file) {
   } finally { input.dispose(); }
 }
 
-function cropFrame(wrapped, box) {
-  const canvas = wrapped.canvas;
+function cropBounds(canvas, box) {
   // 縮小は既存のOpenCVで行い、Canvasでは元の画素を切り出すだけにする。
   // Pythonのroundと同じ偶数丸めにして、ちょうど半画素の境界も合わせる。
   const roundEven = value => value % 1 === .5 ? 2 * Math.round(value / 2) : Math.round(value);
@@ -49,8 +48,41 @@ function cropFrame(wrapped, box) {
   const width = roundEven((box.x + box.width) * canvas.width) - x;
   const height = roundEven((box.y + box.height) * canvas.height) - y;
   if (x < 0 || y < 0 || width < 1 || height < 1 || x + width > canvas.width || y + height > canvas.height) throw new Error('盤面の枠を画像内に指定してください。');
+  return { x, y, width, height };
+}
+function cropFrame(wrapped, box) {
+  const canvas = wrapped.canvas;
+  const { x, y, width, height } = cropBounds(canvas, box);
   const pixels = canvas.getContext('2d', { willReadFrequently: true }).getImageData(x, y, width, height).data;
   return { pixels, width, height };
+}
+
+class MotionSampler {
+  constructor() {
+    this.canvas = new OffscreenCanvas(72, 72);
+    this.context = this.canvas.getContext('2d', { willReadFrequently: true });
+    this.previous = null;
+    this.settleFrames = 0;
+  }
+  shouldRead(wrapped, box, due) {
+    const { x, y, width, height } = cropBounds(wrapped.canvas, box);
+    this.context.drawImage(wrapped.canvas, x, y, width, height, 0, 0, 72, 72);
+    const probe = this.context.getImageData(0, 0, 72, 72).data;
+    let changed = this.previous === null;
+    // 9×9マスごとの変化を確認し、速い一手も平均値に埋もれさせない。
+    for (let row = 0; row < 9 && !changed; row++) for (let column = 0; column < 9 && !changed; column++) {
+      let difference = 0;
+      for (let dy = 0; dy < 8; dy++) for (let dx = 0; dx < 8; dx++) {
+        const index = ((row * 8 + dy) * 72 + column * 8 + dx) * 4;
+        for (let channel = 0; channel < 3; channel++) difference += Math.abs(probe[index + channel] - this.previous[index + channel]);
+      }
+      changed = difference > 3 * 8 * 8 * 3;
+    }
+    if (!changed && !this.settleFrames && !due) return false;
+    this.previous = probe;
+    this.settleFrames = changed ? 3 : Math.max(0, this.settleFrames - 1);
+    return true;
+  }
 }
 
 async function analyze(data) {
@@ -69,6 +101,7 @@ async function analyze(data) {
     if (![6, 12, 30, 60].includes(settings.sampleFps)) throw new Error('読み取り密度が正しくありません。');
     const interval = 1 / Math.min(settings.sampleFps, video.fps);
     const sink = new CanvasSink(opened.track, { poolSize: 1, alpha: false });
+    const sampler = settings.profile === 'wars' ? new MotionSampler() : null;
     nextSample = settings.startTime + interval;
     let lastTime = settings.startTime, lastSaved = 0, lastProgress = 0;
     if (data.checkpoint) {
@@ -88,7 +121,7 @@ async function analyze(data) {
     for await (const wrapped of sink.canvases(lastTime, endTime)) {
       if (stopRequested) break;
       const time = wrapped.timestamp;
-      if (time <= lastTime || time + .0001 < nextSample) continue;
+      if (time <= lastTime || !(sampler ? sampler.shouldRead(wrapped, settings.board, time + .0001 >= nextSample) : time + .0001 >= nextSample)) continue;
       const frame = cropFrame(wrapped, settings.board);
       const info = call('frame', { time, width: frame.width, height: frame.height }, frame.pixels);
       lastTime = time; nextSample = time + interval - .5 / video.fps;

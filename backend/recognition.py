@@ -12,6 +12,31 @@ def boardCodes(board):
                      for square in range(81)], dtype=np.int32)
 
 
+class MotionSampler:
+    """各フレームの小さな盤画像で変化を見つけ、動いた区間は間引かない。"""
+    def __init__(self, settings, fps):
+        self.box = settings['board']
+        self.interval = 1 / min(settings['sampleFps'], fps)
+        self.tolerance = .5 / fps
+        self.nextSample = settings['startTime'] + self.interval
+        self.previous = None
+        self.settleFrames = 0
+
+    def shouldRead(self, frame, timestamp):
+        height, width = frame.shape[:2]
+        box = self.box
+        left, top = round(box['x'] * width), round(box['y'] * height)
+        right, bottom = round((box['x'] + box['width']) * width), round((box['y'] + box['height']) * height)
+        probe = cv2.resize(frame[top:bottom, left:right], (72, 72), interpolation=cv2.INTER_AREA).astype(np.int16)
+        changed = self.previous is None or np.abs(probe - self.previous).reshape(9, 8, 9, 8, 3).mean(axis=(1, 3, 4)).max() > 3
+        if not changed and not self.settleFrames and timestamp + .0001 < self.nextSample:
+            return False
+        self.previous = probe
+        self.settleFrames = 3 if changed else max(0, self.settleFrames - 1)
+        self.nextSample = timestamp + self.interval - self.tolerance
+        return True
+
+
 def extractCells(frame, box, orientation='sente'):
     height, width = frame.shape[:2]
     left, top = round(box['x'] * width), round(box['y'] * height)
@@ -132,6 +157,10 @@ class MoveTracker:
         self.unmatchedFrames = 0
         self.pending = None
         self.pendingCount = 0
+        self.frameUsable = True
+        self.pendingOccupancy = None
+        self.pendingCosts = None
+        self.provisionalDrop = None
         self.refreshMoves()
 
     def refreshMoves(self):
@@ -143,9 +172,64 @@ class MoveTracker:
                 pieceType = shogi.PIECE_PROMOTED[pieceType]
             self.options.append((move, self.board.turn * 14 + pieceType))
 
+    def hasReplyEvidence(self, move, costs, occupancy):
+        """打ちが二枚に写り、次の合法手も一意に写っている場合だけ確認を補う。"""
+        self.board.push(move)
+        try:
+            codes = boardCodes(self.board)
+            currentScore = float(costs[np.arange(81), codes].sum())
+            replies = []
+            for reply in self.board.legal_moves:
+                pieceType = reply.drop_piece_type if reply.from_square is None else self.board.piece_type_at(reply.from_square)
+                if reply.promotion:
+                    pieceType = shogi.PIECE_PROMOTED[pieceType]
+                code = self.board.turn * 14 + pieceType
+                projected = codes.copy()
+                if reply.from_square is not None:
+                    projected[reply.from_square] = 0
+                projected[reply.to_square] = code
+                score = float(costs[np.arange(81), projected].sum())
+                replies.append((score, reply, projected, code))
+            replies.sort(key=lambda value: value[0])
+            if not replies:
+                return False
+            score, reply, projected, code = replies[0]
+            if reply.from_square is None or reply.promotion or self.pendingOccupancy is None:
+                return None
+            margin = replies[1][0] - score if len(replies) > 1 else 10
+            mismatch = ((occupancy > .6) & (projected == 0)) | ((occupancy < .35) & (projected != 0))
+            supported = (currentScore - score > .75 and margin > .18 and score / 81 < .12 and
+                         self.pendingOccupancy[reply.from_square] > .6 and
+                         self.pendingCosts[reply.to_square, code] - costs[reply.to_square, code] > .2 and
+                         occupancy[reply.from_square] < .25 and occupancy[reply.to_square] > .6 and not mismatch.any())
+            return reply.usi() if supported else None
+        finally:
+            self.board.pop()
+
     def observe(self, observation, timestamp):
         costs = self.adapter.costs(observation, self.templates)
         occupancy = observation['occupancy']
+        if self.provisionalDrop is not None and timestamp > self.provisionalDrop['time']:
+            before = boardCodes(shogi.Board(self.provisionalDrop['boardBefore']))
+            mismatch = ((occupancy > .6) & (before == 0)) | ((occupancy < .35) & (before != 0))
+            beforeScore = float(costs[np.arange(81), before].sum())
+            afterScore = float(costs[np.arange(81), self.codes].sum())
+            dropSquare = shogi.Move.from_usi(self.moves[self.provisionalDrop['moveCount']]['usi']).to_square
+            dropGain = beforeScore - afterScore + getattr(self.adapter, 'dropEvidenceWeight', 0) * occupancy[dropSquare]
+            afterMismatch = ((occupancy > .6) & (self.codes == 0)) | ((occupancy < .35) & (self.codes != 0))
+            if not mismatch.any() and beforeScore / 81 < .12 and beforeScore < afterScore:
+                # 応手らしい演出が元局面へ戻ったら、未確定の打ちを破棄する。
+                count = self.provisionalDrop['moveCount']
+                while len(self.moves) > count:
+                    self.board.pop()
+                    self.moves.pop()
+                self.provisionalDrop = None
+                self.pending, self.pendingCount = None, 0
+                self.refreshMoves()
+            elif not afterMismatch.any() and afterScore / 81 < .12 and dropGain > .55:
+                # 打ちだけの局面を三枚目で確認できれば、誤った応手の仮説を解除する。
+                self.provisionalDrop = None
+                self.pending, self.pendingCount = None, 0
         currentScore = float(costs[np.arange(81), self.codes].sum())
         options = []
         for move, code in self.options:
@@ -166,13 +250,19 @@ class MoveTracker:
         gain = currentScore - bestScore
         # 終局画面・フェードなど、盤全体の見た目が変わるフレームは採用しない。
         if bestScore / 81 > .20:
+            self.frameUsable = False
             self.overlayFrames += 1
             self.pending = None
             self.pendingCount = 0
             return
+        self.frameUsable = True
+        if self.provisionalDrop is not None and move.usi() != self.provisionalDrop['reply']:
+            self.pending, self.pendingCount = None, 0
+            return
         sourceOccupancy = 0 if move.from_square is None else occupancy[move.from_square]
         if gain < .55 or margin < .035 or sourceOccupancy > .35 or occupancy[move.to_square] < .6:
-            if gain > .55:
+            occupancyMismatch = ((occupancy > .6) & (self.codes == 0)) | ((occupancy < .35) & (self.codes != 0))
+            if gain > .55 or np.count_nonzero(occupancyMismatch) >= 2:
                 self.unmatchedFrames += 1
             self.pending = None
             self.pendingCount = 0
@@ -186,14 +276,22 @@ class MoveTracker:
             self.pendingCount += 1
         else:
             self.pending, self.pendingCount = usi, 1
+            self.pendingOccupancy = occupancy.copy()
+            self.pendingCosts = costs.copy()
         # 光や王手表示で打った駒が一瞬だけ別種に見えるため、連続一致を待つ。
         confirmations = 3 if move.from_square is None else getattr(self.adapter, 'normalConfirmations', 1)
-        if self.pendingCount < confirmations:
+        replyConfirmed = (isinstance(self.adapter, WarsAdapter) and move.from_square is None and self.pendingCount == 2 and
+                          self.hasReplyEvidence(move, costs, occupancy))
+        if self.pendingCount < confirmations and not replyConfirmed:
             return
         label = shogi.KIF.Exporter.kif_move_from(usi, self.board)
-        review = margin < .18 or bestScore / 81 > .15 or code not in self.templates
+        review = bool(replyConfirmed) or margin < .18 or bestScore / 81 > .15 or code not in self.templates
         if code not in self.templates and costs[move.to_square, code] < .8:
             self.templates[code] = observation['glyph'][move.to_square:move.to_square + 1].copy()
+        if replyConfirmed:
+            self.provisionalDrop = {'boardBefore': self.board.sfen(), 'moveCount': len(self.moves), 'time': timestamp, 'reply': replyConfirmed}
+        elif self.provisionalDrop is not None and timestamp > self.provisionalDrop['time']:
+            self.provisionalDrop = None
         self.board.push(move)
         self.moves.append({'number': len(self.moves) + 1, 'usi': usi, 'label': label,
                            'time': round(timestamp, 3), 'sfen': self.board.sfen(),
@@ -214,6 +312,8 @@ class FrameRecognizer:
         self.lastAccepted = False
         self.analyzedFrames = 0
         self.lastTime = settings['startTime']
+        self.mismatchFrames = 0
+        self.trackingLost = False
 
     def feed(self, frame, timestamp):
         if timestamp <= self.lastTime:
@@ -227,15 +327,31 @@ class FrameRecognizer:
             directionChange = abs(observation['direction'] - self.previousObservation['direction']).max()
             changed = glyphChange > .012 or occupancyChange > .06 or directionChange > .06
         if changed:
-            self.lastAccepted = bool(tracker.observe(observation, timestamp))
+            self.lastAccepted = False
+            # 直前の手を確定した画像に次の手も写っていれば、その候補も確認する。
+            # 同じ局面を同一フレームで二度確認せず、演出を除く連続一致を維持する。
+            for _ in range(4 if isinstance(self.adapter, WarsAdapter) else 1):
+                if not tracker.observe(observation, timestamp):
+                    break
+                self.lastAccepted = True
             self.previousObservation = {key: value.copy() for key, value in observation.items()}
+        occupancy = observation['occupancy']
+        mismatch = np.count_nonzero(((occupancy > .6) & (tracker.codes == 0)) | ((occupancy < .35) & (tracker.codes != 0)))
+        self.mismatchFrames = self.mismatchFrames + 1 if tracker.frameUsable and tracker.pending is None and 2 <= mismatch <= 12 else 0
+        if self.mismatchFrames >= 3:
+            self.trackingLost = True
+        elif tracker.frameUsable and mismatch == 0:
+            self.trackingLost = False
         self.analyzedFrames += 1
         self.lastTime = timestamp
 
     def result(self, elapsedSeconds=0, cancelled=False):
         tracker = self.tracker
         warnings = []
-        moves = [dict(row) for row in tracker.moves]
+        moves = [dict(row) for row in tracker.moves[:self.moveCount()]]
+        incomplete = self.trackingLost or tracker.provisionalDrop is not None or (not cancelled and tracker.pending is not None)
+        if incomplete:
+            warnings.append(f'{len(moves)}手以降で映像の局面に追従できていない可能性があります。開始位置・盤の範囲を確認して最初から解析し、残る場合は動画を提供してください。')
         if self.settings['profile'] == 'generic':
             warnings.append('他アプリの認識は試験対応です。全手を映像と照合してください。')
             for row in moves:
@@ -249,7 +365,11 @@ class FrameRecognizer:
         warnings.append('投了・時間切れなどの終局理由は自動判定していません。')
         return {'moves': moves, 'warnings': warnings, 'analyzedFrames': self.analyzedFrames,
                 'elapsedSeconds': round(elapsedSeconds, 2), 'lastTime': round(self.lastTime, 6),
-                'cancelled': cancelled, 'engineVersion': '1.1', 'source': 'video-only'}
+                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2', 'source': 'video-only'}
+
+    def moveCount(self):
+        provisional = self.tracker.provisionalDrop
+        return provisional['moveCount'] if provisional is not None else len(self.tracker.moves)
 
     def checkpoint(self):
         tracker = self.tracker
@@ -259,9 +379,13 @@ class FrameRecognizer:
                 'emptyTemplates': getattr(self.adapter, 'emptyTemplates', np.array([])).tolist(),
                 'moves': tracker.moves, 'overlayFrames': tracker.overlayFrames,
                 'unmatchedFrames': tracker.unmatchedFrames, 'pending': tracker.pending, 'pendingCount': tracker.pendingCount,
+                'pendingOccupancy': tracker.pendingOccupancy.tolist() if tracker.pending is not None and tracker.pendingOccupancy is not None else None,
+                'pendingCosts': tracker.pendingCosts.tolist() if tracker.pending is not None and tracker.pendingCosts is not None else None,
+                'provisionalDrop': tracker.provisionalDrop,
                 'previousObservation': None if self.previousObservation is None else
                     {key: value.tolist() for key, value in self.previousObservation.items()},
-                'lastAccepted': self.lastAccepted, 'analyzedFrames': self.analyzedFrames, 'lastTime': self.lastTime}
+                'lastAccepted': self.lastAccepted, 'mismatchFrames': self.mismatchFrames, 'trackingLost': self.trackingLost, 'frameUsable': tracker.frameUsable,
+                'analyzedFrames': self.analyzedFrames, 'lastTime': self.lastTime}
 
     @classmethod
     def restore(cls, checkpoint):
@@ -287,11 +411,17 @@ class FrameRecognizer:
         for key in ('overlayFrames', 'unmatchedFrames', 'pending', 'pendingCount'):
             setattr(tracker, key, checkpoint[key])
         tracker.refreshMoves()
+        tracker.frameUsable = checkpoint.get('frameUsable', True)
+        tracker.pendingOccupancy = None if checkpoint.get('pendingOccupancy') is None else np.array(checkpoint['pendingOccupancy'], dtype=np.float32)
+        tracker.pendingCosts = None if checkpoint.get('pendingCosts') is None else np.array(checkpoint['pendingCosts'], dtype=np.float32)
+        tracker.provisionalDrop = checkpoint.get('provisionalDrop')
         instance.tracker = tracker
         previous = checkpoint['previousObservation']
         instance.previousObservation = None if previous is None else {key: np.array(value, dtype=np.float32) for key, value in previous.items()}
         for key in ('lastAccepted', 'analyzedFrames', 'lastTime'):
             setattr(instance, key, checkpoint[key])
+        instance.mismatchFrames = checkpoint.get('mismatchFrames', 0)
+        instance.trackingLost = checkpoint.get('trackingLost', instance.mismatchFrames >= 3)
         return instance
 
 
@@ -313,6 +443,7 @@ def analyzeVideo(path, settings, onProgress=None, isCancelled=None):
             raise ValueError('開始フレームを読み取れません。')
         recognizer = FrameRecognizer(settings, frame)
         tracker = recognizer.tracker
+        sampler = MotionSampler(settings, fps) if settings['profile'] == 'wars' else None
         sampleInterval = 1 / min(settings['sampleFps'], fps)
         nextSample = startTime + sampleInterval
         lastProgress = monotonic()
@@ -327,18 +458,20 @@ def analyzeVideo(path, settings, onProgress=None, isCancelled=None):
                 timestamp = capture.get(cv2.CAP_PROP_POS_FRAMES) / fps
             if timestamp > endTime:
                 break
-            if timestamp + .0001 < nextSample:
+            if sampler is None and timestamp + .0001 < nextSample:
                 continue
             nextSample = timestamp + sampleInterval - .5 / fps
             ok, frame = capture.retrieve()
             if not ok:
                 raise ValueError(f'{timestamp:.1f}秒の画像を取り出せません。')
+            if sampler is not None and not sampler.shouldRead(frame, timestamp):
+                continue
             recognizer.feed(frame, timestamp)
             analyzedFrames += 1
             if monotonic() - lastProgress > .5:
                 onProgress({'progress': min(.999, (timestamp - startTime) / (endTime - startTime)),
-                            'time': round(timestamp, 2), 'moveCount': len(tracker.moves),
-                            'message': f'{len(tracker.moves)}手を抽出しています'})
+                            'time': round(timestamp, 2), 'moveCount': recognizer.moveCount(),
+                            'message': f'{recognizer.moveCount()}手を抽出しています'})
                 lastProgress = monotonic()
         result = recognizer.result(monotonic() - startedAt, isCancelled())
         result['lastTime'] = round(timestamp, 3)
