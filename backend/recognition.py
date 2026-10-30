@@ -371,8 +371,12 @@ class FrameRecognizer:
                 self.lastAccepted = True
             self.previousObservation = {key: value.copy() for key, value in observation.items()}
         occupancy = observation['occupancy']
-        mismatch = np.count_nonzero(((occupancy > .6) & (tracker.codes == 0)) | ((occupancy < .35) & (tracker.codes != 0)))
-        self.mismatchFrames = self.mismatchFrames + 1 if tracker.frameUsable and tracker.pending is None and 2 <= mismatch <= 12 else 0
+        missing = np.count_nonzero((occupancy < .35) & (tracker.codes != 0))
+        extra = np.count_nonzero((occupancy > .6) & (tracker.codes == 0))
+        mismatch = missing + extra
+        # 多くの手を見失った場合も警告する。盤全体が消えるだけの画面は除く。
+        inconsistent = 2 <= mismatch <= 12 or (missing >= 2 and extra >= 2)
+        self.mismatchFrames = self.mismatchFrames + 1 if tracker.frameUsable and tracker.pending is None and inconsistent else 0
         if self.mismatchFrames >= 3:
             self.trackingLost = True
         elif tracker.frameUsable and mismatch == 0:
@@ -400,7 +404,7 @@ class FrameRecognizer:
         warnings.append('投了・時間切れなどの終局理由は自動判定していません。')
         return {'moves': moves, 'warnings': warnings, 'analyzedFrames': self.analyzedFrames,
                 'elapsedSeconds': round(elapsedSeconds, 2), 'lastTime': round(self.lastTime, 6),
-                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2.1', 'source': 'video-only'}
+                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2.2', 'source': 'video-only'}
 
     def moveCount(self):
         provisional = self.tracker.provisionalDrop

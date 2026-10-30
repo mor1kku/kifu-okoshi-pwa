@@ -91,7 +91,17 @@ async function analyze(data) {
   let input, initialized = false, nextSample;
   const began = performance.now();
   const elapsedBefore = data.elapsedSeconds ?? 0;
-  const snapshot = (cancelled) => call('snapshot', { elapsedSeconds: elapsedBefore + (performance.now() - began) / 1000, cancelled });
+  const mediaDiagnostics = { decodedFrames: 0, firstFrameTime: null, lastDecodedTime: null, maxFrameGap: 0, ...data.mediaDiagnostics };
+  const recordDecoded = time => {
+    if (mediaDiagnostics.lastDecodedTime != null && time <= mediaDiagnostics.lastDecodedTime) return;
+    if (mediaDiagnostics.lastDecodedTime != null) mediaDiagnostics.maxFrameGap = Math.max(mediaDiagnostics.maxFrameGap, time - mediaDiagnostics.lastDecodedTime);
+    mediaDiagnostics.firstFrameTime ??= time;
+    mediaDiagnostics.lastDecodedTime = time; mediaDiagnostics.decodedFrames++;
+  };
+  const snapshot = cancelled => {
+    const value = call('snapshot', { elapsedSeconds: elapsedBefore + (performance.now() - began) / 1000, cancelled });
+    value.result.mediaDiagnostics = { ...mediaDiagnostics }; return value;
+  };
   try {
     await runtime();
     const opened = await openInput(data.file); input = opened.input;
@@ -111,6 +121,7 @@ async function analyze(data) {
     } else {
       const first = await sink.getCanvas(settings.startTime);
       if (!first) throw new Error('初期配置のフレームを読み取れません。');
+      recordDecoded(first.timestamp);
       const frame = cropFrame(first, settings.board);
       call('start', { settings: { ...settings, board: { x: 0, y: 0, width: 1, height: 1 } }, width: frame.width, height: frame.height }, frame.pixels);
       initialized = true;
@@ -121,6 +132,7 @@ async function analyze(data) {
     for await (const wrapped of sink.canvases(lastTime, endTime)) {
       if (stopRequested) break;
       const time = wrapped.timestamp;
+      recordDecoded(time);
       if (time <= lastTime || !(sampler ? sampler.shouldRead(wrapped, settings.board, time + .0001 >= nextSample) : time + .0001 >= nextSample)) continue;
       const frame = cropFrame(wrapped, settings.board);
       const info = call('frame', { time, width: frame.width, height: frame.height }, frame.pixels);

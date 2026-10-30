@@ -224,6 +224,31 @@ def testMissingPositionsAreReportedInsteadOfInventingMoves():
     assert core.result()['recognitionIncomplete']
 
 
+@pytest.mark.parametrize('missingMoves', [True, False])
+def testLargePositionGapWarnsButBlankEndingDoesNot(missingMoves):
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'sampleFps': 12, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    prefix = ['7g7f', '3c3d']
+    for index, usi in enumerate(prefix):
+        board.push_usi(usi)
+        core.feed(renderBoard(board), index + .1)
+        core.feed(renderBoard(board), index + .2)
+    matched = renderBoard(board)
+    for usi in '2g2f 8c8d 1g1f 1c1d 3g3f 2c2d 4g4f 4c4d 5g5f 5c5d 6g6f 6c6d 8g8f 7c7d 9g9f 9c9d'.split():
+        board.push_usi(usi)
+    frame = renderBoard(board) if missingMoves else np.full((438, 396, 3), 225, dtype=np.uint8)
+    for time in [20, 21]:
+        core.feed(frame, time)
+    assert not core.result()['recognitionIncomplete']
+    core = FrameRecognizer.restore(core.checkpoint())
+    core.feed(frame, 22)
+    assert [row['usi'] for row in core.result()['moves']] == prefix
+    assert core.result()['recognitionIncomplete'] == missingMoves
+    core.feed(matched, 23)
+    assert not core.result()['recognitionIncomplete']
+
+
 def dropPosition():
     board = shogi.Board()
     core = FrameRecognizer({'startTime': 0, 'sampleFps': 12, 'profile': 'wars', 'orientation': 'sente',

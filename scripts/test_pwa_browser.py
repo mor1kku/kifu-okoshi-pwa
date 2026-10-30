@@ -17,6 +17,7 @@ parser.add_argument('--end', type=float, default=35)
 parser.add_argument('--timeout', type=float, default=600)
 parser.add_argument('--full', action='store_true')
 parser.add_argument('--resume', action='store_true')
+parser.add_argument('--visibility-resume', action='store_true', help='非表示と再表示の両タイミングで自動再開を検証')
 parser.add_argument('--serve', action='store_true')
 parser.add_argument('--port', type=int, default=8002)
 parser.add_argument('--offline', action='store_true')
@@ -37,6 +38,14 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, channel='chrome')
     context = browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=1)
     page = context.new_page()
+    if args.visibility_resume:
+        # ブラウザーの通知を再現する。iOSのプロセス休止そのものの検証ではない。
+        page.add_init_script("""(() => {
+            window.testVisibility = 'visible'; window.testResumes = 0;
+            Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => window.testVisibility });
+            window.setTestVisibility = value => { window.testVisibility = value; document.dispatchEvent(new Event('visibilitychange')); };
+            document.addEventListener('kifu-job-resumed', () => window.testResumes++);
+        })()""")
     errors, requests, sends = [], [], []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('console', lambda message: print('console:', message.text, flush=True) if message.type == 'error' else None)
@@ -66,7 +75,7 @@ with sync_playwright() as p:
         page.locator('#endTime').fill('' if args.full else str(args.end))
         page.locator('#analyzeButton').click()
         deadline = time.monotonic() + args.timeout
-        stopped = False; tick = 0
+        stopped = False; tick = 0; visibilityResumes = 0
         while time.monotonic() < deadline:
             page.wait_for_timeout(2000)
             info = page.evaluate("({notice:document.getElementById('notice').textContent, progress:document.getElementById('progressDetail').textContent, busy:document.getElementById('analyzeButton').disabled, count:document.getElementById('moveCount').textContent})")
@@ -84,12 +93,29 @@ with sync_playwright() as p:
                 page.locator('#resumeButton').click()
                 stopped = True
                 continue
+            if args.visibility_resume and visibilityResumes < 2 and (not args.resume or stopped) and page.locator('#analysisProgress').evaluate('(el) => el.value') > (.03 if visibilityResumes == 0 else .3):
+                if visibilityResumes == 0:
+                    # 保存完了後に戻る場合は、止まっていたUIのポーリングも復活させる。
+                    page.evaluate("setTestVisibility('hidden')")
+                    page.wait_for_function("!document.getElementById('analyzeButton').disabled", timeout=60000)
+                    assert '一時停止' in page.locator('#notice').inner_text()
+                    page.evaluate("setTestVisibility('visible')")
+                else:
+                    # 保存完了を待たずすぐ戻った場合も、二重実行せず再開する。
+                    page.evaluate("() => { setTestVisibility('hidden'); setTestVisibility('visible'); }")
+                visibilityResumes += 1
+                page.wait_for_function('(count) => window.testResumes === count', arg=visibilityResumes, timeout=60000)
+                assert page.locator('#analyzeButton').is_disabled()
+                print(f'PASS: visibility resume {visibilityResumes}', flush=True)
+                continue
             if not info['busy']:
                 break
         else:
             raise AssertionError('解析の時間制限を超えました。')
         assert page.locator('#notice').get_attribute('class') == 'notice', page.locator('#notice').inner_text()
         assert not page.locator('#resultBody').is_hidden(), page.locator('#notice').inner_text()
+        if args.visibility_resume:
+            assert visibilityResumes == 2, '画面復帰の両タイミングを検証できませんでした。'
         with page.expect_download() as download:
             page.locator('#downloadJson').click()
         resultPath = outputDir / (Path(args.video).stem + ('-full' if args.full else '-short') + '.json')

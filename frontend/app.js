@@ -210,17 +210,21 @@ $('analyzeButton').addEventListener('click', handle(async () => {
 }));
 
 async function pollJob() {
+  clearTimeout(pollTimer);
   const jobId = state.job, version = state.videoVersion;
   try {
     const job = await api(`/api/jobs/${jobId}`);
     if (jobId !== state.job || version !== state.videoVersion) return;
     $('analysisProgress').value = job.progress ?? 0; $('progressMessage').textContent = job.message ?? '解析中';
-    $('progressDetail').textContent = `${Math.round((job.progress ?? 0) * 100)}% · ${job.moveCount ?? job.result?.moves.length ?? 0}手${job.time != null ? ` · ${formatTime(job.time)}` : ''}`;
+    const finished = ['complete', 'cancelled', 'failed'].includes(job.status);
+    const moveCount = finished ? job.result?.moves.length ?? job.moveCount ?? 0 : job.moveCount ?? job.result?.moves.length ?? 0;
+    $('progressDetail').textContent = `${Math.round((job.progress ?? 0) * 100)}% · ${moveCount}手${job.time != null ? ` · ${formatTime(job.time)}` : ''}`;
+    if (!finished) $('moveCount').textContent = `解析中 ${moveCount} 手`;
     if (job.status === 'failed') { setBusy(false); $('cancelButton').disabled = true; if (localEngine && job.result) { state.result = job.result; renderResult(); } notice(job.error, true); return; }
     if (['complete', 'cancelled'].includes(job.status)) {
       setBusy(false); $('cancelButton').disabled = true;
       state.result = job.result; restoreSettings(job.result.settings); renderResult();
-      notice(job.status === 'cancelled' ? (localEngine ? '途中まで保存しました。「途中から再開」で続けられます。' : '途中までの結果を保存しました。確認後、設定を変えて再解析できます。') : job.result.recognitionIncomplete ? `${job.result.moves.length}手以降で映像に追従できていない可能性があります。結果の注意事項を確認してください。` : '解析が終わりました。指し手を選び、映像と照合してください。', Boolean(job.result.recognitionIncomplete)); return;
+      notice(job.status === 'cancelled' ? (job.stopReason === 'visibility' ? '画面を閉じたため一時停止しました。画面に戻ると続きから再開します。ページを開き直した場合は同じ動画を選び「途中から再開」を押してください。' : localEngine ? '途中まで保存しました。「途中から再開」で続けられます。' : '途中までの結果を保存しました。確認後、設定を変えて再解析できます。') : job.result.recognitionIncomplete ? `${job.result.moves.length}手以降で映像に追従できていない可能性があります。結果の注意事項を確認してください。` : `解析が終わりました。${moveCount}手を抽出しました。指し手を選び、映像と照合してください。`, Boolean(job.result.recognitionIncomplete)); return;
     }
     pollTimer = setTimeout(pollJob, 1000);
   } catch (error) {
@@ -235,6 +239,14 @@ async function pollJob() {
 $('cancelButton').addEventListener('click', handle(async () => { await api(`/api/jobs/${state.job}/cancel`, { method: 'POST' }); $('cancelButton').disabled = true; $('progressMessage').textContent = '停止を待っています…'; }));
 if (localEngine) {
   document.addEventListener('kifu-message', event => notice(event.detail.message, event.detail.error));
+  document.addEventListener('kifu-job-resumed', event => {
+    if (state.job !== event.detail.id || state.video?.id !== event.detail.videoId) return;
+    clearTimeout(pollTimer); setBusy(true); state.result = null;
+    $('resultBody').hidden = true; $('emptyResult').hidden = false;
+    $('progressArea').hidden = false; $('cancelButton').disabled = false;
+    notice('画面に戻ったので、保存した地点から自動で再開しています。');
+    handle(pollJob)();
+  });
   $('resumeButton').addEventListener('click', handle(async () => {
     setBusy(true);
     try {
@@ -275,7 +287,7 @@ function renderResult() {
   $('savedResult').textContent = `保存済みの解析を開く（${result.moves.length}手${result.cancelled ? '・途中' : ''}）`;
   $('resultBody').hidden = false; $('emptyResult').hidden = true; $('moveCount').textContent = `${result.moves.length} 手`;
   const reviewCount = result.moves.filter((row) => row.review).length;
-  $('resultSummary').textContent = `${result.moves.length}手を抽出 · 要確認 ${reviewCount}手${result.edited ? ' · 修正済み' : ''}${result.cancelled ? ' · 途中停止' : ''}${result.recognitionIncomplete ? ' · 読み取り不足の可能性' : ''}${result.engineVersion ? ` · 解析v${result.engineVersion}` : ''}。終局理由は映像で確認してください。`;
+  $('resultSummary').textContent = `${result.cancelled ? '途中結果' : '解析結果'}：${result.moves.length}手 · 要確認 ${reviewCount}手${result.edited ? ' · 修正済み' : ''}${result.cancelled ? result.stopReason === 'visibility' ? ' · 画面を閉じたため一時停止' : ' · 途中停止' : ''}${result.recognitionIncomplete ? ' · 読み取り不足の可能性' : ''}${result.engineVersion ? ` · 解析v${result.engineVersion}` : ''}。終局理由は映像で確認してください。`;
   $('moveList').replaceChildren(...result.moves.map((row, index) => {
     const button = document.createElement('button'); button.className = 'move-row'; button.dataset.index = index;
     for (const [className, value] of [['move-number', row.number], ['', (index % 2 ? '△ ' : '▲ ') + row.label], ['move-time', formatTime(row.time)], ['review-mark', row.review ? '!' : '']]) { const span = document.createElement('span'); span.className = className; span.textContent = value; button.append(span); }

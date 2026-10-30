@@ -6,22 +6,49 @@ const source = fs.readFileSync('frontend/app.js', 'utf8');
 const response = value => ({ ok: true, status: 200, json: async () => value, blob: async () => ({}) });
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 
-function harness(fetch) {
-  const elements = new Map();
+function harness(fetch, localEngine) {
+  const elements = new Map(), handlers = {};
   const element = id => {
     if (!elements.has(id)) elements.set(id, { value: '', children: [], dataset: {}, listeners: {}, classList: { toggle() {} }, addEventListener(name, fn) { this.listeners[name] = fn; }, append(...items) { this.children.push(...items); }, replaceChildren(...items) { this.children = items; }, setAttribute() {}, getContext() { return new Proxy({}, { get: () => () => {} }); }, pause() {} });
     return elements.get(id);
   };
   const context = vm.createContext({ console, Blob, setTimeout, clearTimeout, FormData: class { append() {} },
     localStorage: { setItem() {}, getItem() { return null; } },
-    document: { getElementById: element, createElement: tag => element(Symbol(tag)) },
+    document: { getElementById: element, createElement: tag => element(Symbol(tag)), addEventListener(type, listener) { handlers[type] = listener; } },
+    kifuLocal: localEngine,
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
     Image: class { naturalWidth = 100; naturalHeight = 100; async decode() {} },
     fetch: url => url === '/api/sample' ? new Promise(() => {}) : fetch(url),
   });
   vm.runInContext(source + '\nglobalThis.appTest = { state, setVideo, setBusy, restoreSettings, pollJob, renderResult, analysisSettings };', context);
-  return { ...context.appTest, element };
+  return { ...context.appTest, element, dispatch: (type, detail) => handlers[type]({ detail }) };
 }
+
+test('結果の手数を完了欄に使い、自動再開時には進捗の取得を再開する', async () => {
+  let reads = 0;
+  const settings = { board: { x: 0, y: 0, width: 1, height: 1 }, profile: 'wars', orientation: 'gote', sampleFps: 12 };
+  const result = { moves: [], settings, cancelled: true, stopReason: 'visibility' };
+  const engine = {
+    request: async path => {
+      if (path === '/api/sample') return new Promise(() => {});
+      reads++; return { status: 'cancelled', stopReason: 'visibility', moveCount: 2, progress: .1, result };
+    },
+    storageKey: key => key, kifLink: () => 'blob:kif', canResume: () => true,
+  };
+  const app = harness(null, engine);
+  app.state.video = { id: 'video' }; app.state.job = 'job';
+  await app.pollJob();
+  assert.match(app.element('progressDetail').textContent, /0手/);
+  assert.match(app.element('resultSummary').textContent, /途中結果：0手.*一時停止/);
+  assert.equal(app.state.busy, false);
+  app.dispatch('kifu-job-resumed', { id: 'another-job', videoId: 'video' });
+  assert.equal(reads, 1);
+  app.dispatch('kifu-job-resumed', { id: 'job', videoId: 'video' });
+  assert.equal(app.state.busy, true);
+  assert.equal(app.element('resultBody').hidden, true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(reads, 2);
+});
 
 test('遅れた動画・保存・比較の応答が現在の棋譜を上書きしない', async () => {
   const oldVideo = deferred(), oldSave = deferred(), oldCompare = deferred();

@@ -1,6 +1,6 @@
 import { stored, fileId } from './storage.js';
 const jobs = new Map(), files = new Map(), videos = new Map(), mediaUrls = new Map();
-let worker, sequence = 0, activeJob, wakeLock, saveQueue = Promise.resolve(), kifUrl;
+let worker, sequence = 0, activeJob, wakeLock, saveQueue = Promise.resolve(), kifUrl, resumeIntent;
 const pending = new Map();
 const announce = (message, error = false) => document.dispatchEvent(new CustomEvent('kifu-message', { detail: { message, error } }));
 function getWorker() {
@@ -15,8 +15,12 @@ function getWorker() {
     if (!activeJob) return;
     if (data.type === 'progress') Object.assign(activeJob, data);
     if (data.type === 'checkpoint') {
-      applySnapshot(activeJob, data);
-      persist(activeJob).catch(error => { announce(error.message, true); getWorker().postMessage({ method: 'stop' }); });
+      const job = activeJob;
+      applySnapshot(job, data);
+      persist(job).catch(error => {
+        resumeIntent = null; job.saveError = error.message; job.cancelRequested = true;
+        announce(error.message, true); getWorker().postMessage({ method: 'stop' });
+      });
     }
   };
   worker.onerror = () => {
@@ -34,6 +38,17 @@ function applySnapshot(job, data) {
   job.checkpoint = data.checkpoint;
   job.nextSample = data.nextSample ?? job.nextSample;
   job.result = { ...data.result, id: job.id, videoId: job.videoId, videoName: job.video.name, settings: job.settings };
+  job.moveCount = data.result.moves.length;
+  job.time = data.result.lastTime ?? job.time;
+}
+function describeResult(job) {
+  if (!job.result) return;
+  job.result.stopReason = job.stopReason ?? null;
+  job.result.diagnostics = { status: job.status, stopReason: job.stopReason ?? null, error: job.error ?? null,
+    startTime: job.settings.startTime, endTime: job.settings.endTime ?? job.video.duration,
+    lastTime: job.result.lastTime, analyzedFrames: job.result.analyzedFrames,
+    video: { width: job.video.width, height: job.video.height, fps: job.video.fps, duration: job.video.duration },
+    browser: navigator.userAgent ?? '' };
 }
 function persist(job) {
   const copy = structuredClone(job);
@@ -48,42 +63,83 @@ async function loadJob(id) {
   const job = await stored(`job:${id}`);
   if (!job) throw Object.assign(new Error('保存済みの結果がありません。'), { status: 404 });
   if (['queued', 'running'].includes(job.status)) {
-    job.status = 'cancelled';
+    job.status = 'cancelled'; job.stopReason = 'reload';
     if (job.result) job.result.cancelled = true;
   }
+  describeResult(job);
   jobs.set(id, job); return job;
 }
 async function keepAwake() {
   if (document.visibilityState !== 'visible' || !navigator.wakeLock || wakeLock) return;
-  try { wakeLock = await navigator.wakeLock.request('screen'); wakeLock.addEventListener('release', () => { wakeLock = null; }); }
+  try {
+    const lock = await navigator.wakeLock.request('screen');
+    if (document.visibilityState !== 'visible') { await lock.release(); return; }
+    wakeLock = lock;
+    lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+  }
   catch { announce('画面の自動ロックを防げません。解析中は画面を開いておいてください。'); }
 }
 document.addEventListener('visibilitychange', () => {
-  if (!activeJob) return;
-  if (document.visibilityState === 'hidden') { activeJob.cancelRequested = true; getWorker().postMessage({ method: 'stop' }); activeJob.message = '画面が閉じられたため途中保存しています'; }
-  else keepAwake();
+  if (document.visibilityState === 'hidden') {
+    if (!activeJob || activeJob.cancelRequested) return;
+    resumeIntent = activeJob; activeJob.stopReason = 'visibility'; activeJob.cancelRequested = true;
+    getWorker().postMessage({ method: 'stop' }); activeJob.message = '画面が閉じられたため、一時停止して途中保存しています';
+  } else {
+    if (activeJob && !activeJob.cancelRequested) keepAwake();
+    tryAutoResume();
+  }
 });
+function tryAutoResume() {
+  const job = resumeIntent;
+  if (!job || activeJob || document.visibilityState !== 'visible') return;
+  if (job.status !== 'cancelled' || !job.checkpoint || job.result?.edited || job.saveError || !files.has(job.videoId)) { resumeIntent = null; return; }
+  resumeIntent = null;
+  runJob(job, true);
+  document.dispatchEvent(new CustomEvent('kifu-job-resumed', { detail: { id: job.id, videoId: job.videoId } }));
+}
 async function runJob(job, resume = false) {
-  activeJob = job; job.status = 'running'; job.error = null; job.cancelRequested = false;
+  activeJob = job; job.status = 'running'; job.error = null; job.saveError = null; job.stopReason = null; job.cancelRequested = false;
   try {
     await keepAwake();
     const data = await rpc('analyze', { file: files.get(job.videoId), video: job.video, settings: job.settings, cancelRequested: job.cancelRequested,
-      ...(resume ? { checkpoint: job.checkpoint, nextSample: job.nextSample, elapsedSeconds: job.result?.elapsedSeconds } : {}) });
+      ...(resume ? { checkpoint: job.checkpoint, nextSample: job.nextSample, elapsedSeconds: job.result?.elapsedSeconds, mediaDiagnostics: job.result?.mediaDiagnostics } : {}) });
     applySnapshot(job, data);
+    if (job.saveError) throw new Error(job.saveError);
     const completed = { ...job, status: data.result.cancelled ? 'cancelled' : 'complete' };
-    if (completed.status === 'complete') { completed.progress = 1; completed.checkpoint = null; }
+    if (completed.status === 'complete') {
+      completed.progress = 1; completed.checkpoint = null; completed.stopReason = null;
+      completed.message = `解析完了 · ${completed.moveCount}手`;
+      if (resumeIntent === job) resumeIntent = null;
+    } else {
+      completed.stopReason ??= 'user';
+      completed.message = completed.stopReason === 'visibility' ? '一時停止 · 画面を閉じたため途中保存しました' : '停止 · 途中まで保存しました';
+    }
+    describeResult(completed);
     job.message = '解析結果を端末内に保存しています';
     await persist(completed);
+    if (job.saveError) throw new Error(job.saveError);
+    // 保存待ちの間に押された「停止」を、古い完了コピーで巻き戻さない。
+    if (completed.status === 'cancelled' && completed.stopReason === 'visibility' && job.stopReason === 'user') {
+      completed.stopReason = 'user'; completed.message = '停止 · 途中まで保存しました';
+      describeResult(completed); await persist(completed);
+    }
     Object.assign(job, completed);
   } catch (error) {
-    job.status = 'failed'; job.error = error.message;
+    if (resumeIntent === job) resumeIntent = null;
+    job.status = 'failed'; job.error = error.message; describeResult(job);
     announce(job.error, true);
     try { await persist(job); } catch (saveError) { job.error += ` ${saveError.message}`; }
-  } finally { activeJob = null; await wakeLock?.release(); wakeLock = null; }
+  } finally {
+    const lock = wakeLock; wakeLock = null;
+    try { await lock?.release(); } catch (error) { announce(`画面ロック防止の解除を確認できません：${error.message}`); }
+    if (activeJob === job) activeJob = null;
+    tryAutoResume();
+  }
 }
 export async function openVideo(file) {
   if (!file.size) throw new Error('空の動画ファイルです。');
   const id = await fileId(file);
+  if (resumeIntent?.videoId !== id) resumeIntent = null;
   const video = { ...await rpc('probe', { file }), id };
   if (!Number.isFinite(video.duration) || video.duration <= 0 || !Number.isFinite(video.fps) || video.fps <= 0) throw new Error('動画の長さを取得できません。');
   // 設定候補に指し手は含めず、認識には映像だけを渡す。
@@ -136,6 +192,7 @@ export async function request(path, options = {}) {
   if (path === '/api/jobs' && options.method === 'POST') {
     if (activeJob) throw new Error('別の動画を解析中です。');
     const settings = JSON.parse(options.body), video = videos.get(settings.videoId);
+    resumeIntent = null;
     if (!files.has(settings.videoId)) throw new Error('動画を選択してください。');
     const job = { id: crypto.randomUUID(), status: 'queued', videoId: video.id, video, settings, progress: 0, message: '端末内で解析を準備しています' };
     jobs.set(job.id, job); activeJob = job;
@@ -143,11 +200,18 @@ export async function request(path, options = {}) {
   }
   if (parts[1] !== 'jobs') throw new Error('未対応の操作です。');
   const job = await loadJob(id);
-  if (action === 'cancel') { if (activeJob?.id === id) { activeJob.cancelRequested = true; getWorker().postMessage({ method: 'stop' }); } return { cancelled: true }; }
+  if (action === 'cancel') {
+    if (resumeIntent?.id === id) resumeIntent = null;
+    job.stopReason = 'user';
+    if (activeJob?.id === id) { activeJob.cancelRequested = true; getWorker().postMessage({ method: 'stop' }); }
+    if (job.status === 'cancelled') { job.message = '停止 · 途中まで保存しました'; describeResult(job); await persist(job); }
+    return { cancelled: true };
+  }
   if (action === 'resume') {
     if (activeJob) throw new Error('解析中です。');
     if (!job.checkpoint || job.result?.edited) throw new Error('再開できる途中保存がありません。');
     if (!files.has(job.videoId)) throw new Error('同じ動画を選び直してから再開してください。');
+    resumeIntent = null;
     activeJob = job; runJob(job, true); return job;
   }
   if (action === 'record') {

@@ -3,6 +3,104 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
+const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
+const flush = () => new Promise(resolve => setImmediate(resolve));
+function engineHarness({ save = async () => {}, requestWake } = {}) {
+  const handlers = {}, events = [], messages = [], writes = [];
+  let worker;
+  const document = { visibilityState: 'visible', addEventListener(type, listener) { handlers[type] = listener; }, dispatchEvent(event) { events.push(event); } };
+  const context = vm.createContext({ URL, structuredClone, console, setTimeout, clearTimeout, document,
+    navigator: { userAgent: 'test browser', ...(requestWake ? { wakeLock: { request: requestWake } } : {}) },
+    CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
+    stored: async (key, value) => { writes.push({ key, value }); await save(key, value); },
+    Worker: class { constructor() { worker = this; } postMessage(data) { messages.push(data); } },
+  });
+  const source = fs.readFileSync('pwa/local-engine.js', 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/\bexport /g, '').replace(/import\.meta\.url/g, "'https://example.github.io/kifu/local-engine.js'");
+  vm.runInContext(source + '\nglobalThis.testApi = { runJob, request, jobs, files, get active() { return activeJob; } };', context);
+  const api = context.testApi;
+  const job = { id: 'job', videoId: 'video', video: { name: 'video.mp4', duration: 100, width: 100, height: 200, fps: 60 }, settings: { startTime: 3 }, moveCount: 2, time: 4 };
+  api.jobs.set(job.id, job); api.files.set(job.videoId, {});
+  return { api, job, events, messages, writes,
+    start: () => api.runJob(job),
+    visibility(state) { document.visibilityState = state; handlers.visibilitychange(); },
+    respond(cancelled, count = 3) {
+      const request = messages.filter(message => message.method === 'analyze').at(-1);
+      worker.onmessage({ data: { id: request.id, value: { checkpoint: { lastTime: 5 }, nextSample: 5.1, result: { moves: Array.from({ length: count }, () => ({ usi: '2g2f' })), cancelled, lastTime: 5, analyzedFrames: 45 } } } });
+    },
+    checkpoint() { worker.onmessage({ data: { type: 'checkpoint', checkpoint: { lastTime: 4 }, result: { moves: [], lastTime: 4 } } }); },
+  };
+}
+
+test('途中保存後に画面へ戻ると同じチェックポイントから一度だけ再開する', async () => {
+  const app = engineHarness(); const running = app.start(); await flush();
+  app.visibility('hidden'); app.respond(true); await running;
+  assert.equal(app.job.status, 'cancelled');
+  assert.equal(app.job.result.stopReason, 'visibility');
+  assert.equal(app.job.moveCount, 3);
+  app.visibility('visible'); app.visibility('visible'); await flush();
+  const requests = app.messages.filter(message => message.method === 'analyze');
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].payload.checkpoint.lastTime, 5);
+  assert.equal(requests[1].payload.nextSample, 5.1);
+  assert.equal(app.events.filter(event => event.type === 'kifu-job-resumed').length, 1);
+  app.respond(false, 20); await flush();
+  assert.equal(app.job.status, 'complete'); assert.equal(app.job.moveCount, 20);
+  assert.equal(app.job.result.diagnostics.status, 'complete');
+});
+
+test('停止完了前に画面へ戻っても保存とロック解除が済んでから再開する', async () => {
+  const release = deferred(); let locks = 0;
+  const app = engineHarness({ requestWake: async () => ({ addEventListener() {}, release: () => ++locks === 1 ? release.promise : Promise.resolve() }) });
+  const running = app.start(); await flush();
+  app.visibility('hidden'); app.visibility('visible'); app.respond(true); await flush();
+  assert.equal(app.messages.filter(message => message.method === 'analyze').length, 1);
+  release.resolve(); await running; await flush();
+  assert.equal(app.messages.filter(message => message.method === 'analyze').length, 2);
+  assert.equal(app.job.status, 'running');
+  app.respond(false); await flush();
+});
+
+test('一時停止の保存中に手動停止したら自動再開せず停止理由も維持する', async () => {
+  const saving = deferred();
+  const app = engineHarness({ save: () => saving.promise });
+  const running = app.start(); await flush();
+  app.visibility('hidden'); app.respond(true); await flush();
+  await app.api.request('/api/jobs/job/cancel'); app.visibility('visible'); saving.resolve(); await running;
+  assert.equal(app.job.status, 'cancelled'); assert.equal(app.job.stopReason, 'user');
+  assert.equal(app.job.result.stopReason, 'user');
+  assert.equal(app.messages.filter(message => message.method === 'analyze').length, 1);
+  assert.equal(app.writes.filter(write => write.key === 'job:job').at(-1).value.stopReason, 'user');
+});
+
+test('途中保存に失敗したジョブは自動再開せず保存エラーを表示する', async () => {
+  const app = engineHarness({ save: async () => { throw new Error('保存容量が不足しています'); } });
+  const running = app.start(); await flush();
+  app.checkpoint(); await flush(); app.visibility('hidden'); app.respond(true); await running; app.visibility('visible'); await flush();
+  assert.equal(app.job.status, 'failed'); assert.match(app.job.error, /保存容量/);
+  assert.equal(app.messages.filter(message => message.method === 'analyze').length, 1);
+  assert.ok(app.events.some(event => event.type === 'kifu-message' && event.detail.error));
+});
+
+test('ロック解除待ちの手動停止でも保存済みの停止理由を更新する', async () => {
+  const release = deferred();
+  const app = engineHarness({ requestWake: async () => ({ addEventListener() {}, release: () => release.promise }) });
+  const running = app.start(); await flush();
+  app.visibility('hidden'); app.respond(true); await flush();
+  assert.equal(app.job.status, 'cancelled');
+  await app.api.request('/api/jobs/job/cancel');
+  assert.equal(app.job.result.stopReason, 'user');
+  assert.equal(app.writes.filter(write => write.key === 'job:job').at(-1).value.stopReason, 'user');
+  app.visibility('visible'); release.resolve(); await running;
+  assert.equal(app.messages.filter(message => message.method === 'analyze').length, 1);
+});
+
+test('最後の進捗通知が古くても完了時の手数と時刻を結果に揃える', async () => {
+  const app = engineHarness(); const running = app.start(); await flush(); app.respond(false, 20); await running;
+  assert.equal(app.job.moveCount, 20); assert.equal(app.job.time, 5);
+  assert.match(app.job.message, /20手/); assert.equal(app.job.result.stopReason, null);
+  assert.equal(app.job.result.diagnostics.video.fps, 60);
+});
+
 test('新版の保存に旧HTTPキャッシュを混ぜず、エンジンと取得済みの一覧を保存する', async () => {
   const handlers = {}; let cached, savedManifest; const freshManifest = {};
   const context = vm.createContext({ URL, Request,
@@ -91,6 +189,10 @@ test('デコード中断時も次に読む時刻をチェックポイントへ�
   const saved = messages.filter(message => message.type === 'checkpoint').at(-1);
   assert.equal(saved.checkpoint.lastTime, .2);
   assert.ok(Math.abs(saved.nextSample - (.2 + 1 / 12 - .5 / 30)) < 1e-10);
+  assert.equal(saved.result.mediaDiagnostics.decodedFrames, 3);
+  assert.equal(saved.result.mediaDiagnostics.firstFrameTime, 0);
+  assert.equal(saved.result.mediaDiagnostics.lastDecodedTime, .2);
+  assert.equal(saved.result.mediaDiagnostics.maxFrameGap, .1);
 });
 
 test('短い局面を予定時刻より前でも読み、変化後の確認フレームも省かない', () => {
