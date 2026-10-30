@@ -5,22 +5,22 @@ const vm = require('node:vm');
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const flush = () => new Promise(resolve => setImmediate(resolve));
-function engineHarness({ save = async () => {}, requestWake } = {}) {
+function engineHarness({ save = async () => {}, requestWake, memory = new Map() } = {}) {
   const handlers = {}, events = [], messages = [], writes = [];
   let worker;
   const document = { visibilityState: 'visible', addEventListener(type, listener) { handlers[type] = listener; }, dispatchEvent(event) { events.push(event); } };
-  const context = vm.createContext({ URL, structuredClone, console, setTimeout, clearTimeout, document,
+  const context = vm.createContext({ URL, structuredClone, console, setTimeout, clearTimeout, document, crypto: require('node:crypto').webcrypto,
     navigator: { userAgent: 'test browser', ...(requestWake ? { wakeLock: { request: requestWake } } : {}) },
     CustomEvent: class { constructor(type, options) { this.type = type; this.detail = options.detail; } },
-    stored: async (key, value) => { writes.push({ key, value }); await save(key, value); },
+    stored: async (key, value) => { if (value === undefined) return structuredClone(memory.get(key)); writes.push({ key, value }); await save(key, value); memory.set(key, structuredClone(value)); },
     Worker: class { constructor() { worker = this; } postMessage(data) { messages.push(data); } },
   });
   const source = fs.readFileSync('pwa/local-engine.js', 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/\bexport /g, '').replace(/import\.meta\.url/g, "'https://example.github.io/kifu/local-engine.js'");
-  vm.runInContext(source + '\nglobalThis.testApi = { runJob, request, jobs, files, canUpdate, get active() { return activeJob; } };', context);
+  vm.runInContext(source + '\nglobalThis.testApi = { runJob, request, jobs, files, videos, canUpdate, getSession, saveSession, runGames, stopGames, discoverGames, stopDiscovery, get active() { return activeJob; } };', context);
   const api = context.testApi;
   const job = { id: 'job', videoId: 'video', video: { name: 'video.mp4', duration: 100, width: 100, height: 200, fps: 60 }, settings: { startTime: 3 }, moveCount: 2, time: 4 };
-  api.jobs.set(job.id, job); api.files.set(job.videoId, {});
-  return { api, job, events, messages, writes,
+  api.jobs.set(job.id, job); api.files.set(job.videoId, {}); api.videos.set(job.videoId, { ...job.video, id: job.videoId });
+  return { api, job, events, messages, writes, memory,
     start: () => api.runJob(job),
     visibility(state) { document.visibilityState = state; handlers.visibilitychange(); },
     respond(cancelled, count = 3) {
@@ -28,6 +28,7 @@ function engineHarness({ save = async () => {}, requestWake } = {}) {
       worker.onmessage({ data: { id: request.id, value: { checkpoint: { lastTime: 5 }, nextSample: 5.1, result: { moves: Array.from({ length: count }, () => ({ usi: '2g2f' })), cancelled, lastTime: 5, analyzedFrames: 45 } } } });
     },
     checkpoint() { worker.onmessage({ data: { type: 'checkpoint', checkpoint: { lastTime: 4 }, result: { moves: [], lastTime: 4 } } }); },
+    respondScan(value) { const request = messages.filter(message => message.method === 'findGames').at(-1); worker.onmessage({ data: { id: request.id, value } }); },
   };
 }
 
@@ -213,4 +214,115 @@ test('短い局面を予定時刻より前でも読み、変化後の確認フ�
   }
   for (let n = 0; n < 3; n++) assert.equal(sample(), true);
   assert.equal(sample(), false);
+});
+
+async function twoGames(app) {
+  const session = await app.api.getSession('video');
+  session.games = ['first', 'second'].map((id, index) => ({ id, selected: true, status: 'ready', jobId: null,
+    settings: { videoId: 'video', startTime: index * 10, endTime: (index + 1) * 10, sampleFps: 12, profile: 'wars', orientation: index ? 'gote' : 'sente', board: { x: 0, y: 0, width: 1, height: 1 } } }));
+  await app.api.saveSession(session);
+  return session;
+}
+const analyses = app => app.messages.filter(message => message.method === 'analyze');
+
+test('局ごとの設定を独立して保存し、結果とロック解除の後に次局を開始する', async () => {
+  const releasing = deferred(); let releaseCount = 0;
+  const app = engineHarness({ requestWake: async () => ({ addEventListener() {}, release: () => ++releaseCount === 1 ? releasing.promise : Promise.resolve() }) });
+  await twoGames(app); await app.api.runGames('video'); await flush();
+  app.respond(false, 6); await flush();
+  assert.equal(analyses(app).length, 1);
+  releasing.resolve(); await flush();
+  assert.equal(analyses(app).length, 2);
+  assert.equal(analyses(app)[1].payload.settings.orientation, 'gote');
+  app.respond(false, 8); await flush();
+  const saved = await app.api.getSession('video');
+  assert.deepEqual(Array.from(saved.games, game => game.moveCount), [6, 8]);
+  assert.notEqual(saved.games[0].jobId, saved.games[1].jobId);
+  assert.equal(saved.queue.status, 'complete'); assert.equal(app.api.canUpdate(), true);
+  saved.games[1].settings.board.x = .1;
+  assert.equal((await app.api.getSession('video')).games[0].settings.board.x, 0);
+});
+
+test('一括解析の非表示停止は現在局を再開してから次局へ進む', async () => {
+  const app = engineHarness(); await twoGames(app); await app.api.runGames('video'); await flush();
+  app.visibility('hidden'); app.respond(true); await flush();
+  assert.equal(analyses(app).length, 1);
+  app.visibility('visible'); app.visibility('visible'); await flush();
+  assert.equal(analyses(app).length, 2);
+  assert.equal(analyses(app)[1].payload.settings.gameId, 'first');
+  assert.equal(analyses(app)[1].payload.checkpoint.lastTime, 5);
+  app.respond(false); await flush();
+  assert.equal(analyses(app)[2].payload.settings.gameId, 'second');
+  app.respond(false); await flush(); assert.equal(app.api.canUpdate(), true);
+});
+
+test('一括解析を手動停止したあと冷起動しても、完了局を飛ばして同じ局から再開する', async () => {
+  const app = engineHarness(); await twoGames(app); await app.api.runGames('video'); await flush();
+  app.respond(false); await flush();
+  await app.api.stopGames(); app.respond(true); await flush();
+  assert.equal(analyses(app).length, 2);
+  const saved = await app.api.getSession('video'); assert.equal(saved.queue.status, 'paused');
+  const next = engineHarness({ memory: app.memory });
+  await next.api.getSession('video'); next.api.files.delete('video');
+  await assert.rejects(next.api.runGames('video'), /同じ動画/);
+  next.api.files.set('video', {}); await next.api.runGames('video'); await flush();
+  assert.equal(analyses(next).length, 1);
+  assert.equal(analyses(next)[0].payload.settings.gameId, 'second');
+  assert.equal(analyses(next)[0].payload.checkpoint.lastTime, 5);
+  assert.equal(next.api.active.id, saved.games[1].jobId);
+  next.respond(false); await flush();
+});
+
+test('結果保存に失敗した一括解析は次の局を開始しない', async () => {
+  let fail = false;
+  const app = engineHarness({ save: async key => { if (fail && key.startsWith('job:')) throw new Error('保存容量不足'); } });
+  await twoGames(app); await app.api.runGames('video'); await flush(); fail = true;
+  app.respond(false); await flush();
+  assert.equal(analyses(app).length, 1);
+  assert.equal((await app.api.getSession('video')).queue.status, 'paused');
+  assert.equal((await app.api.getSession('video')).games[0].status, 'failed');
+  assert.equal(app.api.canUpdate(), true);
+});
+
+test('局の準備保存中の停止でも次のWorker解析を開始しない', async () => {
+  const gate = deferred(); let blocking = false;
+  const app = engineHarness({ save: async key => { if (blocking && key.startsWith('session:')) await gate.promise; } });
+  await twoGames(app); blocking = true;
+  const start = app.api.runGames('video'); await flush();
+  const stop = app.api.stopGames(); gate.resolve(); await Promise.all([start, stop]); await flush();
+  assert.equal(analyses(app).length, 0); assert.equal(app.api.canUpdate(), true);
+});
+
+test('未確定の先後では解析せず、手動指定した局の設定で解析する', async () => {
+  const app = engineHarness(); const session = await twoGames(app);
+  session.games[1].settings.orientation = null; await app.api.saveSession(session);
+  await assert.rejects(app.api.runGames('video'), /先後が未確定/); assert.equal(analyses(app).length, 0);
+  session.games[0].selected = false; session.games[1].settings.orientation = 'sente'; await app.api.saveSession(session);
+  await app.api.runGames('video'); await flush();
+  assert.equal(analyses(app)[0].payload.settings.orientation, 'sente'); app.respond(false); await flush();
+});
+
+test('再探索で未確定だった終了境界を補い、手修正と棋譜を保持する', async () => {
+  const app = engineHarness(); const session = await twoGames(app);
+  session.games[0].settings.endTime = null;
+  session.games[1].settings.endTime = 19; session.games[1].detection = { manual: true };
+  await app.api.saveSession(session);
+  const discovery = app.api.discoverGames('video', session.games[0].settings); await flush();
+  app.respondScan({ games: session.games.map((game, index) => ({ ...game.settings, endTime: index ? 20 : 10, detection: {} })), cancelled: false, lastTime: 20 });
+  const updated = await discovery;
+  assert.equal(updated.games.length, 2);
+  assert.equal(updated.games[0].settings.endTime, 10);
+  assert.equal(updated.games[1].settings.endTime, 19);
+  assert.equal(updated.games[1].detection.manual, true);
+});
+
+test('停止時に局一覧の保存が失敗してもWorkerへ停止を伝える', async () => {
+  let fail = false;
+  const app = engineHarness({ save: async key => { if (fail && key.startsWith('session:')) throw new Error('保存失敗'); } });
+  await twoGames(app); await app.api.runGames('video'); await flush(); fail = true;
+  await assert.rejects(app.api.stopGames(), /保存失敗/);
+  assert.equal(app.messages.filter(message => message.method === 'stop').length, 1);
+  assert.equal(app.api.active.cancelRequested, true);
+  assert.equal(app.api.active.stopReason, 'user');
+  fail = false; app.respond(true); await flush(); assert.equal(analyses(app).length, 1);
 });

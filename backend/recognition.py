@@ -413,7 +413,7 @@ class FrameRecognizer:
         warnings.append('投了・時間切れなどの終局理由は自動判定していません。')
         return {'moves': moves, 'warnings': warnings, 'analyzedFrames': self.analyzedFrames,
                 'elapsedSeconds': round(elapsedSeconds, 2), 'lastTime': round(self.lastTime, 6),
-                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2.3', 'source': 'video-only'}
+                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.3.0', 'source': 'video-only'}
 
     def moveCount(self):
         provisional = self.tracker.provisionalDrop

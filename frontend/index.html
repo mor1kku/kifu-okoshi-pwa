@@ -26,14 +26,24 @@
           <button id="savedResult" class="text-button" hidden>保存済みの解析を開く</button>
           <progress id="uploadProgress" max="100" value="0" hidden aria-label="動画のアップロード進捗"></progress>
         </section>
-        <section class="step"><div class="section-title"><span class="step-number">02</span><h2>盤面を合わせる</h2></div>
+        <section id="gamesPanel" class="step games-panel" hidden aria-label="動画内の対局">
+          <div class="section-title"><h2>動画内の対局</h2><span id="gameCount" class="count-badge">0 局</span></div>
+          <button id="findGames" class="secondary" disabled>対局を自動で探す</button>
+          <p class="field-help">初期配置と初手から各局を探します。先後が不明な局は選んで指定してください。初期配置が映らない局は自動で復元できません。</p>
+          <div id="gameList" class="game-list" aria-label="対局一覧"></div>
+          <div class="button-row"><button id="addGame" class="text-button" disabled>＋ 表示位置に対局を追加</button><button id="removeGame" class="text-button" disabled>選択中の局を削除</button></div>
+          <button id="analyzeGames" class="primary" disabled>選んだ局をまとめて解析</button>
+          <p id="queueMessage" class="field-help" aria-live="polite"></p>
+        </section>
+        <section class="step"><div class="section-title"><span class="step-number">02</span><h2 id="setupTitle">盤面を合わせる</h2></div>
           <label class="field-label" for="profile">盤と駒の見た目</label>
           <select id="profile"><option value="kioh">棋桜 — 黄色の駒・青い盤</option><option value="wars">将棋ウォーズ — 木目の盤</option><option value="generic">ほかのアプリ — 初期配置で照合</option></select>
           <p class="field-help">ほかの見た目は試験対応です。盤面が固定された画面録画を使用してください。</p>
-          <label class="field-label" for="orientation">画面の下側</label><select id="orientation"><option value="sente">先手</option><option value="gote">後手（180°反転）</option></select>
+          <label class="field-label" for="orientation">画面の下側</label><select id="orientation"><option value="sente">先手</option><option value="gote">後手（180°反転）</option><option value="">未確定 — 選択してください</option></select>
           <label class="field-label" for="startTime">初期配置が見える時刻（秒）</label><input id="startTime" type="number" min="0" value="0" step="0.05">
           <p class="field-help">平手の初期配置で、開始演出が消えた直後。1手目が動く前を選んでください。</p>
           <button id="useFrame" class="secondary compact" disabled>表示中のフレームを開始位置に</button><p class="field-help">駒がまだ一枚も動いていない初期配置を選んでください。画面の下側が先手とは限りません。</p>
+          <button id="autoBoard" class="secondary compact" hidden disabled>表示中の盤面の枠を自動補正</button>
           <details><summary>読み取り・盤面の詳細設定</summary>
             <label class="field-label" for="endTime">終了時刻（秒・空欄で最後まで）</label><input id="endTime" type="number" min="0" step="0.1" placeholder="動画の最後まで">
             <label class="field-label" for="sampleFps">読み取り密度</label><select id="sampleFps"><option value="6">6 fps — 軽量</option><option value="12" selected>12 fps — 標準</option><option value="30">30 fps — 細かく確認</option><option value="60">60 fps — 全フレーム優先</option></select><p class="field-help">将棋ウォーズは、どの設定でも盤面が変わる区間を自動で細かく読み取ります。</p>
@@ -43,6 +53,7 @@
             <div class="button-row"><button id="saveProfile" class="secondary compact">設定を保存</button><button id="loadProfile" class="secondary compact">設定を読込</button><input id="profileFile" type="file" accept="application/json,.json" hidden></div>
           </details>
         </section>
+        <button id="saveGame" class="secondary" hidden>この局の設定を保存</button>
         <button id="analyzeButton" class="primary" disabled><span>棋譜を起こす</span><span>→</span></button>
         <button id="resumeButton" class="secondary" hidden>途中から再開</button>
         <p class="privacy-note">ローカル起動中はこのPCで処理します。<br>クラウド利用時は接続先サーバーで処理します。</p>
@@ -56,7 +67,7 @@
           <div class="preview-badge" id="previewBadge" hidden><span></span>緑の枠内が読み取り範囲</div>
         </div>
         <div class="frame-controls"><input id="timeline" type="range" min="0" max="1" value="0" step="0.05" disabled aria-label="プレビュー時刻"><div class="frame-toolbar"><div class="button-row"><button id="prevFrame" class="icon-button" aria-label="0.1秒戻る" disabled>−0.1秒</button><button id="nextFrame" class="icon-button" aria-label="0.1秒進む" disabled>＋0.1秒</button></div><input id="previewTime" type="number" min="0" step="0.05" value="0" aria-label="表示時刻（秒）" disabled><button id="togglePlayer" class="text-button" disabled>動画を再生 ▷</button></div></div>
-        <p class="canvas-tip">盤の<strong>外枠の左上から右下</strong>までドラッグ。持ち駒・時計は含めません。</p>
+        <p class="canvas-tip">盤の<strong>9×9マスの左上から右下</strong>までドラッグ。数字・外枠・駒台は含めません。</p>
         <div id="progressArea" class="analysis-progress" hidden><div><strong id="progressMessage">解析を準備しています</strong><button id="cancelButton" class="text-button">停止</button></div><progress id="analysisProgress" max="1" value="0"></progress><p id="progressDetail" class="mono"></p></div>
       </section>
       <section class="result-panel"><div class="section-title result-title"><span class="step-number">03</span><h2>指し手を確かめる</h2><span id="moveCount" class="count-badge">0 手</span></div>

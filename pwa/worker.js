@@ -154,12 +154,55 @@ async function analyze(data) {
   } finally { input?.dispose(); activeRun = false; }
 }
 
+async function findGames(data, singleFrame = false) {
+  if (activeRun) throw new Error('解析が終わってから操作してください。');
+  activeRun = true; stopRequested = Boolean(data.cancelRequested);
+  let input;
+  try {
+    await runtime();
+    const opened = await openInput(data.file); input = opened.input;
+    const sink = new CanvasSink(opened.track, { poolSize: 1, alpha: false });
+    const width = Math.min(600, data.video.width), height = Math.round(width * data.video.height / data.video.width);
+    const canvas = new OffscreenCanvas(width, height), context = canvas.getContext('2d', { willReadFrequently: true });
+    const pixels = wrapped => { context.drawImage(wrapped.canvas, 0, 0, width, height); return context.getImageData(0, 0, width, height).data; };
+    if (singleFrame) {
+      emit({ type: 'message', message: '初期配置と盤のマス目を照合しています…' });
+      const wrapped = await sink.getCanvas(data.time);
+      if (!wrapped) throw new Error('この時刻の映像を読み取れません。');
+      return call('autoBoard', { ...data.settings, width, height }, pixels(wrapped));
+    }
+    call('scanStart', data.settings);
+    emit({ type: 'message', message: '動画内の対局を探しています。初期配置と最初の指し手を確認します。' });
+    const sampler = new MotionSampler(), boardSampler = new MotionSampler(), fullBox = { x: 0, y: 0, width: 1, height: 1 };
+    let result = { games: [], lastTime: 0 }, lastRead = -1, lastProgress = 0, lastDecoded = 0;
+    for await (const wrapped of sink.canvases(0, data.video.duration)) {
+      if (stopRequested) break;
+      lastDecoded = wrapped.timestamp;
+      const due = wrapped.timestamp - lastRead >= (result.watchingFirstMove ? 1 / Math.min(60, data.video.fps) - .0001 : .2);
+      const sceneChanged = sampler.shouldRead(wrapped, fullBox, due);
+      const boardChanged = result.board && boardSampler.shouldRead(wrapped, result.board, due);
+      if (sceneChanged || boardChanged) {
+        result = call('scanFrame', { time: wrapped.timestamp, width, height }, pixels(wrapped));
+        lastRead = wrapped.timestamp;
+      }
+      if (performance.now() - lastProgress > 400) {
+        emit({ type: 'scanProgress', ...result, progress: wrapped.timestamp / data.video.duration });
+        await new Promise(resolve => setTimeout(resolve, 0)); lastProgress = performance.now();
+      }
+    }
+    if (!stopRequested && lastDecoded < data.video.duration - 1) throw new Error(`${lastDecoded.toFixed(1)}秒で動画の読み取りが途切れました。`);
+    return { ...result, cancelled: stopRequested };
+  } finally { input?.dispose(); activeRun = false; }
+}
+
 self.onmessage = async ({ data }) => {
   if (data.method === 'stop') { stopRequested = true; return; }
   try {
     let value;
     if (data.method === 'probe') value = await probe(data.payload.file);
     else if (data.method === 'analyze') value = await analyze(data.payload);
+    else if (data.method === 'findGames') value = await findGames(data.payload);
+    else if (data.method === 'detectBoard') value = await findGames(data.payload, true);
     else if (data.method === 'warmup') { await runtime(); value = true; }
     else { if (activeRun) throw new Error('解析が終わってから操作してください。'); await runtime(); value = call(data.method, data.payload); }
     emit({ id: data.id, value });

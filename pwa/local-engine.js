@@ -1,6 +1,9 @@
 import { stored, fileId } from './storage.js';
 const jobs = new Map(), files = new Map(), videos = new Map(), mediaUrls = new Map();
 let worker, sequence = 0, activeJob, wakeLock, saveQueue = Promise.resolve(), kifUrl, resumeIntent;
+const sessions = new Map();
+let discovery = false, batchSession = null, batchAdvancing = false, batchEpoch = 0, sessionSaves = Promise.resolve();
+const sessionEvent = session => document.dispatchEvent(new CustomEvent('kifu-session', { detail: structuredClone(session) }));
 const pending = new Map();
 const announce = (message, error = false) => document.dispatchEvent(new CustomEvent('kifu-message', { detail: { message, error } }));
 function getWorker() {
@@ -12,6 +15,7 @@ function getWorker() {
       pending.delete(data.id); data.error ? request.reject(new Error(data.error)) : request.resolve(data.value); return;
     }
     if (data.type === 'message') { announce(data.message); if (activeJob) activeJob.message = data.message; }
+    if (data.type === 'scanProgress') document.dispatchEvent(new CustomEvent('kifu-scan-progress', { detail: data }));
     if (!activeJob) return;
     if (data.type === 'progress') Object.assign(activeJob, data);
     if (data.type === 'checkpoint') {
@@ -81,12 +85,14 @@ async function keepAwake() {
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
+    if (discovery) stopDiscovery();
     if (!activeJob || activeJob.cancelRequested) return;
     resumeIntent = activeJob; activeJob.stopReason = 'visibility'; activeJob.cancelRequested = true;
     getWorker().postMessage({ method: 'stop' }); activeJob.message = '画面が閉じられたため、一時停止して途中保存しています';
   } else {
     if (activeJob && !activeJob.cancelRequested) keepAwake();
     tryAutoResume();
+    advanceBatch().catch(batchError);
   }
 });
 function tryAutoResume() {
@@ -133,8 +139,143 @@ async function runJob(job, resume = false) {
     const lock = wakeLock; wakeLock = null;
     try { await lock?.release(); } catch (error) { announce(`画面ロック防止の解除を確認できません：${error.message}`); }
     if (activeJob === job) activeJob = null;
+    try { await updateGameJob(job); } catch (error) { batchError(error); }
     tryAutoResume();
+    advanceBatch().catch(batchError);
   }
+}
+
+export async function getSession(videoId) {
+  if (!sessions.has(videoId)) {
+    const session = await stored(`session:${videoId}`) ?? { version: 1, videoId, games: [], queue: { status: 'idle', gameIds: [] } };
+    if (session.queue.status === 'running') session.queue.status = 'paused';
+    for (const game of session.games) if (game.status === 'running') game.status = 'cancelled';
+    sessions.set(videoId, session);
+  }
+  return structuredClone(sessions.get(videoId));
+}
+async function persistSession(session) {
+  const copy = structuredClone(session);
+  sessionSaves = sessionSaves.catch(() => {}).then(() => stored(`session:${copy.videoId}`, copy));
+  await sessionSaves;
+  sessions.set(copy.videoId, copy); sessionEvent(copy);
+  return structuredClone(copy);
+}
+function validateGame(game, video, requireSide = false) {
+  const s = game.settings, b = s.board;
+  if (!Number.isFinite(s.startTime) || s.startTime < 0 || s.startTime >= video.duration ||
+      (s.endTime != null && (!Number.isFinite(s.endTime) || s.endTime <= s.startTime || s.endTime > video.duration + .01))) throw new Error('各局の開始・終了時刻を動画内に指定してください。');
+  if (!b || !['x', 'y', 'width', 'height'].every(key => Number.isFinite(b[key])) || b.x < 0 || b.y < 0 || b.width < .05 || b.height < .05 || b.x + b.width > 1.000001 || b.y + b.height > 1.000001) throw new Error('盤面の範囲を画像内に指定してください。');
+  if (!['wars', 'kioh', 'generic'].includes(s.profile) || ![6, 12, 30, 60].includes(s.sampleFps)) throw new Error('盤と読み取り密度を確認してください。');
+  if (requireSide && !['sente', 'gote'].includes(s.orientation)) throw new Error('先後が未確定の局があります。「画面の下側」を指定してください。');
+}
+export async function saveSession(session) {
+  if (activeJob || discovery || batchSession || batchAdvancing) throw new Error('停止してから対局を修正してください。');
+  const video = videos.get(session.videoId);
+  if (!video) throw new Error('同じ動画を選び直してください。');
+  if (session.games.length > 200 || new Set(session.games.map(game => game.id)).size !== session.games.length) throw new Error('対局一覧が正しくありません。');
+  session.games.forEach(game => validateGame(game, video));
+  return persistSession(session);
+}
+export async function detectBoard(videoId, time, settings) {
+  if (!canUpdate()) throw new Error('解析が終わってから操作してください。');
+  return rpc('detectBoard', { file: files.get(videoId), video: videos.get(videoId), time, settings });
+}
+export async function discoverGames(videoId, settings) {
+  if (!canUpdate()) throw new Error('解析が終わってから操作してください。');
+  discovery = { cancelRequested: false };
+  try {
+    await keepAwake();
+    const result = await rpc('findGames', { file: files.get(videoId), video: videos.get(videoId), settings, cancelRequested: discovery.cancelRequested });
+    const session = await getSession(videoId);
+    // 再探索しても、手修正済みの局と棋譜を上書きしない。
+    for (const found of result.games) {
+      const existing = session.games.find(game => Math.abs((game.detection?.sourceStartTime ?? game.settings.startTime) - found.startTime) < 1);
+      if (existing) {
+        // 探索を途中で止めた時には、次局の境界がまだ分からない。
+        if (!existing.detection?.manual && !existing.jobId) {
+          if (found.endTime != null) existing.settings.endTime = found.endTime;
+          if (!existing.settings.orientation && found.orientation) existing.settings.orientation = found.orientation;
+          existing.detection = { ...found.detection, sourceStartTime: found.startTime };
+          existing.status = existing.settings.orientation ? 'ready' : 'needsReview';
+        }
+        continue;
+      }
+      const { detection, boundaryTime, ...setup } = found;
+      session.games.push({ id: crypto.randomUUID(), settings: { ...setup, videoId }, detection: { ...detection, sourceStartTime: found.startTime },
+        selected: true, jobId: null, status: found.orientation ? 'ready' : 'needsReview' });
+    }
+    session.games.sort((a, b) => a.settings.startTime - b.settings.startTime);
+    session.discovery = { cancelled: result.cancelled, lastTime: result.lastTime };
+    return await persistSession(session);
+  } finally {
+    discovery = false; const lock = wakeLock; wakeLock = null;
+    try { await lock?.release(); } catch (error) { announce(error.message, true); }
+  }
+}
+export function stopDiscovery() { if (discovery) { discovery.cancelRequested = true; getWorker().postMessage({ method: 'stop' }); } }
+async function updateGameJob(job) {
+  const session = sessions.get(job.videoId), game = session?.games.find(item => item.id === job.settings.gameId);
+  if (!game || game.jobId !== job.id) return;
+  game.status = job.status; game.moveCount = job.result?.moves.length ?? 0;
+  await persistSession(session);
+}
+function batchError(error) {
+  announce(error.message, true);
+  if (batchSession) { batchSession.queue.status = 'paused'; sessionEvent(batchSession); batchSession = null; }
+}
+async function createJob(settings) {
+  const video = videos.get(settings.videoId);
+  if (!files.has(settings.videoId)) throw new Error('動画を選択してください。');
+  validateGame({ settings }, video, true);
+  const job = { id: crypto.randomUUID(), status: 'queued', videoId: video.id, video, settings: structuredClone(settings), progress: 0, message: '端末内で解析を準備しています' };
+  jobs.set(job.id, job);
+  const session = sessions.get(video.id), game = session?.games.find(item => item.id === settings.gameId);
+  if (game) { game.jobId = job.id; game.status = 'running'; await persistSession(session); }
+  return job;
+}
+export async function runGames(videoId) {
+  if (!canUpdate()) throw new Error('処理中です。停止後に再開してください。');
+  if (!files.has(videoId)) throw new Error('同じ動画を選び直してから再開してください。');
+  const session = sessions.get(videoId) ?? await getSession(videoId);
+  const video = videos.get(videoId);
+  const selected = session.games.filter(game => game.selected && game.status !== 'complete');
+  if (!selected.length) throw new Error('未解析の局を選択してください。完了した局は個別に再解析できます。');
+  selected.forEach(game => validateGame(game, video, true));
+  session.queue = { status: 'running', gameIds: selected.map(game => game.id), currentGameId: null };
+  batchSession = session; batchEpoch++;
+  try { await persistSession(session); await advanceBatch(); }
+  catch (error) { batchError(error); throw error; }
+}
+async function advanceBatch() {
+  if (!batchSession || batchAdvancing || activeJob || resumeIntent || document.visibilityState !== 'visible') return;
+  batchAdvancing = true;
+  const epoch = batchEpoch;
+  const stopped = () => !batchSession || epoch !== batchEpoch;
+  try {
+    const session = sessions.get(batchSession.videoId); batchSession = session;
+    const previous = session.games.find(game => game.id === session.queue.currentGameId);
+    if (previous && previous.status !== 'complete') {
+      session.queue.status = 'paused'; await persistSession(session); batchSession = null; return;
+    }
+    const game = session.queue.gameIds.map(id => session.games.find(item => item.id === id)).find(item => item && item.status !== 'complete');
+    if (!game) { session.queue.status = 'complete'; await persistSession(session); batchSession = null; return; }
+    session.queue.currentGameId = game.id;
+    await persistSession(session);
+    if (stopped()) return;
+    let job = game.jobId ? await loadJob(game.jobId) : null;
+    if (stopped()) return;
+    const resume = Boolean(job?.checkpoint && !job.result?.edited && JSON.stringify(job.settings) === JSON.stringify({ ...game.settings, gameId: game.id }));
+    if (!resume) job = await createJob({ ...game.settings, gameId: game.id });
+    if (stopped()) return;
+    activeJob = job; runJob(job, resume);
+    document.dispatchEvent(new CustomEvent('kifu-game-started', { detail: { gameId: game.id, jobId: job.id, videoId: job.videoId } }));
+  } finally { batchAdvancing = false; }
+}
+export async function stopGames() {
+  const session = batchSession ? sessions.get(batchSession.videoId) : null; batchSession = null; batchEpoch++; resumeIntent = null;
+  if (activeJob) await request(`/api/jobs/${activeJob.id}/cancel`, { method: 'POST' });
+  if (session) { session.queue.status = 'paused'; await persistSession(session); }
 }
 export async function openVideo(file) {
   if (!file.size) throw new Error('空の動画ファイルです。');
@@ -190,12 +331,10 @@ export async function request(path, options = {}) {
     return videos.get(id) ?? { ...saved, needsFile: true };
   }
   if (path === '/api/jobs' && options.method === 'POST') {
-    if (activeJob) throw new Error('別の動画を解析中です。');
-    const settings = JSON.parse(options.body), video = videos.get(settings.videoId);
+    if (activeJob || batchSession || discovery) throw new Error('別の動画を解析中です。');
+    const settings = JSON.parse(options.body);
     resumeIntent = null;
-    if (!files.has(settings.videoId)) throw new Error('動画を選択してください。');
-    const job = { id: crypto.randomUUID(), status: 'queued', videoId: video.id, video, settings, progress: 0, message: '端末内で解析を準備しています' };
-    jobs.set(job.id, job); activeJob = job;
+    const job = await createJob(settings); activeJob = job;
     runJob(job); return job;
   }
   if (parts[1] !== 'jobs') throw new Error('未対応の操作です。');
@@ -208,7 +347,7 @@ export async function request(path, options = {}) {
     return { cancelled: true };
   }
   if (action === 'resume') {
-    if (activeJob) throw new Error('解析中です。');
+    if (activeJob || batchSession || discovery) throw new Error('解析中です。');
     if (!job.checkpoint || job.result?.edited) throw new Error('再開できる途中保存がありません。');
     if (!files.has(job.videoId)) throw new Error('同じ動画を選び直してから再開してください。');
     resumeIntent = null;
@@ -220,7 +359,7 @@ export async function request(path, options = {}) {
     if (edit.moves.length > 1000) throw new Error('指し手は1000手以下にしてください。');
     const result = await rpc('edit', { ...edit, result: job.result });
     const updated = { ...job, result, checkpoint: null };
-    await persist(updated); jobs.set(id, updated); return result;
+    await persist(updated); jobs.set(id, updated); await updateGameJob(updated); return result;
   }
   if (action === 'compare') {
     const file = options.body.get('file');
@@ -239,7 +378,7 @@ export function kifLink(result) {
 export const mediaURL = id => mediaUrls.get(id) ?? '';
 export const storageKey = key => `kifu-pwa:${new URL('./', import.meta.url).pathname}:${key}`;
 export const canResume = id => Boolean(jobs.get(id)?.checkpoint && !jobs.get(id)?.result?.edited);
-export const canUpdate = () => !activeJob && !resumeIntent && pending.size === 0;
+export const canUpdate = () => !activeJob && !resumeIntent && !discovery && !batchSession && !batchAdvancing && pending.size === 0;
 export async function prepareOffline() {
   if (!('serviceWorker' in navigator)) throw new Error('このブラウザーではオフライン保存を使えません。SafariのHTTPSページで開いてください。');
   const registration = await new Promise((resolve, reject) => {

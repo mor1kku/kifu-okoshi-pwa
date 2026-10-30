@@ -22,6 +22,7 @@ parser.add_argument('--serve', action='store_true')
 parser.add_argument('--port', type=int, default=8002)
 parser.add_argument('--offline', action='store_true')
 parser.add_argument('--settings', help='任意動画を検証する盤面設定JSON')
+parser.add_argument('--auto-setup', action='store_true', help='盤枠・開始時刻・先後を動画から自動検出する')
 parser.add_argument('--expect-error', help='指定した説明で解析を拒否することを検証')
 args = parser.parse_args()
 rootDir = Path(__file__).resolve().parents[1]
@@ -66,7 +67,21 @@ with sync_playwright() as p:
         page.locator('#videoFile').set_input_files(str(rootDir / args.video))
         page.locator('#analyzeButton').wait_for(state='visible')
         page.wait_for_function("!document.getElementById('analyzeButton').disabled", timeout=60000)
-        if args.settings:
+        if args.auto_setup:
+            profile = json.loads((rootDir / args.settings).read_text(encoding='utf-8'))['profile'] if args.settings else 'wars'
+            page.locator('#profile').select_option(profile)
+            page.evaluate("document.addEventListener('kifu-session', e => { window.detectedSession = e.detail; });")
+            page.locator('#findGames').click()
+            discoveryDeadline = time.monotonic() + args.timeout
+            while page.locator('#findGames').is_disabled() and time.monotonic() < discoveryDeadline:
+                page.wait_for_timeout(3000)
+                print(json.dumps({'discovery': page.locator('#progressDetail').inner_text()}, ensure_ascii=True), flush=True)
+            assert not page.locator('#findGames').is_disabled(), '対局探索が時間内に完了しませんでした。'
+            detected = page.evaluate('window.detectedSession')
+            assert detected and len(detected['games']) == 1, detected
+            assert detected['games'][0]['settings']['orientation'], detected
+            print(json.dumps({'autoSettings': detected['games'][0]['settings']}, ensure_ascii=True), flush=True)
+        elif args.settings:
             settingsPath = rootDir / args.settings
             settings = json.loads(settingsPath.read_text(encoding='utf-8'))
             page.locator('#profileFile').set_input_files(str(settingsPath))

@@ -35,7 +35,7 @@ class Handler(SimpleHTTPRequestHandler):
             if name == 'sw.js':
                 text = re.sub(r'(const cacheName = `\$\{cachePrefix\})([^`]+)', r'\g<1>\g<2>-update-test', text)
             else:
-                text = text.replace('v1.2.3 <span', 'v1.2.4-test <span')
+                text = text.replace('v1.3.0 <span', 'v1.3.1-test <span')
             body = text.encode('utf-8'); kind = 'text/javascript' if name == 'sw.js' else 'text/html'
         else:
             return super().do_GET()
@@ -82,14 +82,14 @@ with sync_playwright() as p:
         assert not set(oldCaches).intersection(observer.evaluate('caches.keys()'))
         observer.goto(origin + '/kifu/'); observer.wait_for_load_state('networkidle')
         header = observer.locator('.masthead-note').inner_text()
-        if 'v1.2.3' not in header:
+        if 'v1.3.0' not in header:
             print('UPDATE DEBUG:', header, observer.evaluate("""async () => {
                 const r = await navigator.serviceWorker.getRegistration();
                 const names = await caches.keys(); const cached = [];
                 for (const name of names) { const c = await caches.open(name); const response = await c.match(new URL('./index.html', location.href)); cached.push([name, response ? (await response.text()).match(/v1\\.2\\.\\d/)?.[0] : null]); }
                 return { active: r?.active?.state, waiting: r?.waiting?.state, installing: r?.installing?.state, cached };
             }"""), flush=True)
-        assert 'v1.2.3' in header
+        assert 'v1.3.0' in header
         observer.wait_for_function("!document.getElementById('resultBody').hidden")
         assert '解析v1.2.1' in observer.locator('#resultSummary').inner_text()
         print('PASS: closing all old app tabs activates the update and keeps the old result', flush=True)
@@ -97,16 +97,16 @@ with sync_playwright() as p:
         state['next'] = True
         observer.locator('#updateButton').click()
         observer.wait_for_function("document.getElementById('notice').textContent.includes('ほかの')", timeout=120000)
-        assert 'v1.2.3' in observer.locator('.masthead-note').inner_text()
+        assert 'v1.3.0' in observer.locator('.masthead-note').inner_text()
         assert not observer.locator('#updateButton').is_disabled()
         second.close()
         observer.locator('#updateButton').click()
-        observer.wait_for_function("document.querySelector('.masthead-note').textContent.includes('v1.2.4-test')", timeout=30000)
+        observer.wait_for_function("document.querySelector('.masthead-note').textContent.includes('v1.3.1-test')", timeout=30000)
         observer.wait_for_function("!document.getElementById('resultBody').hidden")
         assert '解析v1.2.1' in observer.locator('#resultSummary').inner_text()
         context.set_offline(True); observer.reload()
         observer.wait_for_function("!document.getElementById('resultBody').hidden")
-        assert 'v1.2.4-test' in observer.locator('.masthead-note').inner_text()
+        assert 'v1.3.1-test' in observer.locator('.masthead-note').inner_text()
         assert not errors, errors
         print('PASS: update button protects other tabs, preserves saved results, and works offline after updating', flush=True)
     finally:

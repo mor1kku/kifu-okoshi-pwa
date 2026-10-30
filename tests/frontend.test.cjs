@@ -20,7 +20,7 @@ function harness(fetch, localEngine) {
     Image: class { naturalWidth = 100; naturalHeight = 100; async decode() {} },
     fetch: url => url === '/api/sample' ? new Promise(() => {}) : fetch(url),
   });
-  vm.runInContext(source + '\nglobalThis.appTest = { state, setVideo, setBusy, restoreSettings, pollJob, renderResult, analysisSettings };', context);
+  vm.runInContext(source + '\nglobalThis.appTest = { state, setVideo, setBusy, restoreSettings, pollJob, renderResult, analysisSettings, selectGame, commitGame };', context);
   return { ...context.appTest, element, dispatch: (type, detail, preventDefault = () => {}) => handlers[type]({ detail, preventDefault }) };
 }
 
@@ -134,4 +134,60 @@ test('動画用設定JSONの開始時刻をプレビューと解析に適用す�
   assert.equal(app.analysisSettings().orientation, 'gote');
   assert.equal(app.state.frameTime, 3);
   assert.match(app.element('notice').textContent, /開始時刻も適用/);
+});
+
+test('局の設定変更と切替は他局の先後・盤枠・棋譜を変更しない', async () => {
+  const engine = { getSession: async () => ({}), saveSession: async session => structuredClone(session),
+    request: async () => new Promise(() => {}), frameBlob: async () => ({}), storageKey: key => key };
+  const app = harness(null, engine); app.state.video = { id: 'video', duration: 60 };
+  const settings = { videoId: 'video', startTime: 0, endTime: 20, board: { x: 0, y: 0, width: 1, height: 1 }, profile: 'wars', orientation: 'sente', sampleFps: 12 };
+  app.state.session = { videoId: 'video', queue: { status: 'idle' }, games: [
+    { id: 'a', settings: structuredClone(settings), jobId: null },
+    { id: 'b', settings: { ...structuredClone(settings), startTime: 30, endTime: 50, orientation: 'gote' }, jobId: null },
+  ] };
+  await app.selectGame('a', false); app.state.box = { x: .1, y: .1, width: .8, height: .8 }; app.element('endTime').value = '18';
+  await app.selectGame('b'); assert.equal(app.element('orientation').value, 'gote'); assert.equal(app.state.box.x, 0);
+  await app.selectGame('a'); assert.equal(app.state.box.x, .1); assert.equal(app.element('endTime').value, 18);
+  app.state.session.games[0].jobId = 'existing';
+  await app.commitGame(); assert.equal(app.state.session.games[0].jobId, 'existing');
+  app.element('orientation').value = 'gote'; await app.commitGame(); assert.equal(app.state.session.games[0].jobId, null);
+});
+
+test('局切替後に遅れた旧局の結果が届いても選択局を上書きしない', async () => {
+  const late = deferred();
+  const settings = { videoId: 'video', startTime: 0, endTime: null, sampleFps: 12, board: { x: 0, y: 0, width: 1, height: 1 }, profile: 'wars', orientation: 'gote' };
+  const engine = { getSession: async () => ({}), saveSession: async session => structuredClone(session),
+    request: async path => path === '/api/jobs/old' ? late.promise : new Promise(() => {}), frameBlob: async () => ({}), storageKey: key => key };
+  const app = harness(null, engine); app.state.video = { id: 'video', duration: 60 };
+  app.state.session = { videoId: 'video', queue: { status: 'idle' }, games: [{ id: 'a', jobId: 'old', settings }, { id: 'b', settings }] };
+  const selecting = app.selectGame('a', false); await app.selectGame('b', false);
+  late.resolve({ result: { moves: [], settings } }); await selecting;
+  assert.equal(app.state.gameId, 'b'); assert.equal(app.state.result, null);
+});
+
+test('局設定の保存中に別動画へ移っても旧応答で動画と設定を混ぜない', async () => {
+  const saving = deferred();
+  const engine = { getSession: async () => ({}), saveSession: () => saving.promise,
+    request: async () => new Promise(() => {}), frameBlob: async () => ({}), storageKey: key => key };
+  const app = harness(null, engine); app.state.video = { id: 'A', duration: 60 };
+  const settings = { videoId: 'A', startTime: 0, endTime: 20, sampleFps: 12, board: { x: 0, y: 0, width: 1, height: 1 }, profile: 'wars', orientation: 'sente' };
+  const old = { videoId: 'A', queue: { status: 'idle' }, games: [{ id: 'a1', settings }, { id: 'a2', settings: { ...settings, startTime: 30, endTime: 50 } }] };
+  app.state.session = old; await app.selectGame('a1', false);
+  const selecting = app.selectGame('a2');
+  app.state.video = { id: 'B', duration: 60 }; app.state.videoVersion++;
+  app.state.session = { videoId: 'B', queue: { status: 'idle' }, games: [] }; app.state.gameId = null;
+  saving.resolve(structuredClone(old)); await selecting;
+  assert.equal(app.state.video.id, 'B'); assert.equal(app.state.session.videoId, 'B'); assert.equal(app.state.gameId, null);
+});
+
+test('局設定の保存エラーでは保存済み棋譜との関連を失わない', async () => {
+  const settings = { videoId: 'video', startTime: 0, endTime: 20, sampleFps: 12, board: { x: 0, y: 0, width: 1, height: 1 }, profile: 'wars', orientation: 'sente' };
+  const engine = { getSession: async () => ({}), saveSession: async () => { throw new Error('保存失敗'); }, request: async () => new Promise(() => {}) };
+  const app = harness(null, engine); app.state.video = { id: 'video', duration: 60 };
+  app.state.gameId = 'a'; app.state.job = 'record'; app.state.result = { moves: [] };
+  app.state.session = { videoId: 'video', queue: { status: 'idle' }, games: [{ id: 'a', jobId: 'record', settings }] };
+  app.restoreSettings(settings); app.element('orientation').value = 'gote';
+  await assert.rejects(app.commitGame(), /保存失敗/);
+  assert.equal(app.state.session.games[0].jobId, 'record'); assert.equal(app.state.job, 'record');
+  assert.equal(app.state.session.games[0].settings.orientation, 'sente'); assert.ok(app.state.result);
 });

@@ -3,6 +3,8 @@ const localEngine = globalThis.kifuLocal ?? null;
 const kiohBox = () => ({ x: 9 / 414, y: 230 / 900, width: 396 / 414, height: 438 / 900 });
 const warsBox = () => ({ x: 8 / 414, y: 254 / 900, width: 398 / 414, height: 434 / 900 });
 const state = { video: null, image: null, box: kiohBox(), job: null, result: null, busy: false, frameRequest: 0, frameTime: 0, player: false, videoVersion: 0, comparisonRequest: 0 };
+state.session = null; state.gameId = null; state.scanning = false; state.runningJob = false;
+state.selectionRequest = 0;
 const formatTime = (value) => { if (value == null) return '—'; const tenths = Math.round(value * 10); return `${Math.floor(tenths / 600)}:${((tenths % 600) / 10).toFixed(1).padStart(4, '0')}`; };
 let frameTimer, pollTimer, dragStart;
 
@@ -42,6 +44,12 @@ function setBusy(value) {
     $(id).disabled = value || ((!state.video || state.video.needsFile) && ['analyzeButton', 'useFrame'].includes(id));
   }
   if (localEngine) { $('resumeButton').disabled = value || !state.video || state.video.needsFile; $('updateButton').disabled = value; }
+  if (localEngine?.getSession) {
+    for (const id of ['findGames', 'addGame', 'autoBoard', 'saveGame', 'analyzeGames', 'removeGame']) $(id).disabled = value || !state.video || state.video.needsFile;
+    $('removeGame').disabled ||= !state.gameId;
+    $('saveGame').hidden = !state.gameId;
+    renderGames();
+  }
 }
 
 function syncBoxInputs() {
@@ -54,7 +62,7 @@ function validateBox(box) {
 
 function restoreSettings(settings) {
   state.box = { ...settings.board }; $('profile').value = settings.profile;
-  $('orientation').value = settings.orientation; $('sampleFps').value = settings.sampleFps;
+  $('orientation').value = settings.orientation ?? ''; $('sampleFps').value = settings.sampleFps;
   $('startTime').value = settings.startTime ?? 0; $('endTime').value = settings.endTime ?? '';
   syncBoxInputs(); drawFrame();
 }
@@ -96,6 +104,7 @@ async function setVideo(video, useSample = false) {
   const version = ++state.videoVersion;
   ++state.frameRequest; clearTimeout(frameTimer); setBusy(true);
   state.video = video; state.result = null; state.job = null; state.savedJob = null; state.image = null;
+  state.session = null; state.gameId = null;
   if (Array.from($('sampleSelect').options ?? []).some(option => option.value === video.id)) $('sampleSelect').value = video.id;
   $('previewCanvas').getContext('2d').clearRect(0, 0, $('previewCanvas').width, $('previewCanvas').height);
   clearTimeout(pollTimer); $('resultBody').hidden = true; $('emptyResult').hidden = false; $('moveCount').textContent = '0 手';
@@ -113,6 +122,11 @@ async function setVideo(video, useSample = false) {
   try {
   const saved = await api(`/api/videos/${video.id}/latest-result`);
   if (version !== state.videoVersion) return;
+  if (localEngine?.getSession) {
+    state.session = await localEngine.getSession(video.id);
+    if (version !== state.videoVersion) return;
+    renderGames();
+  }
   state.savedJob = saved.id;
   if (saved.id) { $('savedResult').hidden = false; $('savedResult').textContent = `保存済みの解析を開く（${saved.moveCount}手${saved.cancelled ? '・途中' : ''}）`; }
   await showFrame(Number($('startTime').value));
@@ -201,9 +215,10 @@ function analysisSettings() {
 }
 $('analyzeButton').addEventListener('click', handle(async () => {
   if (!state.video || state.busy) return;
+  if (!await commitGame()) return;
   setBusy(true); notice('動画から指し手を推定しています。終了までこの画面で確認できます。');
   try {
-    const job = await api('/api/jobs', jsonOptions('POST', analysisSettings())); state.job = job.id; state.result = null;
+    const job = await api('/api/jobs', jsonOptions('POST', { ...analysisSettings(), ...(state.gameId ? { gameId: state.gameId } : {}) })); state.job = job.id; state.result = null; state.runningJob = true;
     $('resultBody').hidden = true; $('emptyResult').hidden = false; $('moveCount').textContent = '0 手'; $('progressArea').hidden = false; $('cancelButton').disabled = false; $('analysisProgress').value = 0;
     saveLocal('kifu-last-job', state.job); await pollJob();
   } catch (error) { setBusy(false); throw error; }
@@ -217,12 +232,13 @@ async function pollJob() {
     if (jobId !== state.job || version !== state.videoVersion) return;
     $('analysisProgress').value = job.progress ?? 0; $('progressMessage').textContent = job.message ?? '解析中';
     const finished = ['complete', 'cancelled', 'failed'].includes(job.status);
+    state.runningJob = !finished;
     const moveCount = finished ? job.result?.moves.length ?? job.moveCount ?? 0 : job.moveCount ?? job.result?.moves.length ?? 0;
     $('progressDetail').textContent = `${Math.round((job.progress ?? 0) * 100)}% · ${moveCount}手${job.time != null ? ` · ${formatTime(job.time)}` : ''}`;
     $('moveCount').textContent = `${finished ? '' : '解析中 '}${moveCount} 手`;
-    if (job.status === 'failed') { setBusy(false); $('cancelButton').disabled = true; if (localEngine && job.result) { state.result = job.result; renderResult(); } notice(job.error, true); return; }
+    if (job.status === 'failed') { setBusy(state.session?.queue.status === 'running'); $('cancelButton').disabled = true; if (localEngine && job.result) { state.result = job.result; renderResult(); } notice(job.error, true); return; }
     if (['complete', 'cancelled'].includes(job.status)) {
-      setBusy(false); $('cancelButton').disabled = true;
+      setBusy(state.session?.queue.status === 'running'); $('cancelButton').disabled = state.session?.queue.status !== 'running';
       state.result = job.result; restoreSettings(job.result.settings); renderResult();
       notice(job.status === 'cancelled' ? (job.stopReason === 'visibility' ? '画面を閉じたため一時停止しました。画面に戻ると続きから再開します。ページを開き直した場合は同じ動画を選び「途中から再開」を押してください。' : localEngine ? '途中まで保存しました。「途中から再開」で続けられます。' : '途中までの結果を保存しました。確認後、設定を変えて再解析できます。') : job.result.recognitionIncomplete ? `${job.result.moves.length}手以降で映像に追従できていない可能性があります。結果の注意事項を確認してください。` : `解析が終わりました。${moveCount}手を抽出しました。指し手を選び、映像と照合してください。`, Boolean(job.result.recognitionIncomplete)); return;
     }
@@ -236,7 +252,12 @@ async function pollJob() {
     notice(`進捗を取得できません：${error.message} 再接続を試みます。`, true); pollTimer = setTimeout(pollJob, 4000);
   }
 }
-$('cancelButton').addEventListener('click', handle(async () => { await api(`/api/jobs/${state.job}/cancel`, { method: 'POST' }); $('cancelButton').disabled = true; $('progressMessage').textContent = '停止を待っています…'; }));
+$('cancelButton').addEventListener('click', handle(async () => {
+  if (state.scanning) localEngine.stopDiscovery();
+  else if (state.session?.queue.status === 'running') await localEngine.stopGames();
+  else await api(`/api/jobs/${state.job}/cancel`, { method: 'POST' });
+  $('cancelButton').disabled = true; $('progressMessage').textContent = '停止を待っています…';
+}));
 if (localEngine) {
   let updateLocked = false;
   document.addEventListener('kifu-update-request', event => {
@@ -251,7 +272,7 @@ if (localEngine) {
   document.addEventListener('kifu-message', event => notice(event.detail.message, event.detail.error));
   document.addEventListener('kifu-job-resumed', event => {
     if (state.job !== event.detail.id || state.video?.id !== event.detail.videoId) return;
-    clearTimeout(pollTimer); setBusy(true); state.result = null;
+    clearTimeout(pollTimer); state.runningJob = true; setBusy(true); state.result = null;
     $('resultBody').hidden = true; $('emptyResult').hidden = false;
     $('progressArea').hidden = false; $('cancelButton').disabled = false;
     notice('画面に戻ったので、保存した地点から自動で再開しています。');
@@ -293,6 +314,10 @@ async function selectMove(index, seek = true) {
 }
 function renderResult() {
   const result = state.result; if (!result) return;
+  if (state.session) {
+    state.gameId = state.session.games.find(game => game.jobId === state.job)?.id ?? null;
+    renderGames(); $('saveGame').hidden = !state.gameId;
+  }
   state.savedJob = state.job; $('savedResult').hidden = false;
   $('savedResult').textContent = `保存済みの解析を開く（${result.moves.length}手${result.cancelled ? '・途中' : ''}）`;
   $('resultBody').hidden = false; $('emptyResult').hidden = true; $('moveCount').textContent = `${result.moves.length} 手`;
@@ -307,6 +332,7 @@ function renderResult() {
   $('warnings').replaceChildren(...(result.warnings ?? []).map((warning) => { const p = document.createElement('div'); p.textContent = typeof warning === 'string' ? warning : warning.message; return p; }));
   $('editMoves').value = result.moves.map((row) => row.usi).join('\n'); $('termination').value = result.termination || '';
   $('downloadKif').href = localEngine ? localEngine.kifLink(result) : `/api/jobs/${state.job}/kif`; $('comparison').textContent = '';
+  $('downloadKif').download = state.gameId ? `game-${String(state.session.games.findIndex(game => game.id === state.gameId) + 1).padStart(2, '0')}.kif` : 'record.kif';
   if (localEngine) $('resumeButton').hidden = !localEngine.canResume(state.job);
   if (result.moves.length) handle(selectMove)(result.moves.length - 1, true); else renderBoard('lnsgkgsnl/1r5b1/ppppppppp/9/9/9/PPPPPPPPP/1B5R1/LNSGKGSNL b - 1');
 }
@@ -334,6 +360,151 @@ $('referenceFile').addEventListener('change', handle(async (event) => {
   }
   finally { event.target.value = ''; }
 }));
+
+function hasUnsavedMoves() {
+  return state.result && ($('editMoves').value.trim() !== state.result.moves.map(row => row.usi).join('\n') || $('termination').value !== (state.result.termination || ''));
+}
+function renderGames() {
+  if (!localEngine?.getSession) return;
+  const games = state.session?.games ?? [];
+  $('gameCount').textContent = `${games.length} 局`;
+  $('setupTitle').textContent = state.gameId ? `第${games.findIndex(game => game.id === state.gameId) + 1}局の盤面を合わせる` : '盤面を合わせる';
+  const labels = { ready: '未解析', needsReview: '先後を指定', running: '解析中', complete: '解析済み', cancelled: '途中保存', failed: '設定を確認' };
+  $('gameList').replaceChildren(...games.map((game, index) => {
+    const row = document.createElement('div'); row.className = `game-card${game.id === state.gameId ? ' active' : ''}`;
+    const check = document.createElement('input'); check.type = 'checkbox'; check.checked = game.selected; check.disabled = state.busy || state.video?.needsFile;
+    check.setAttribute('aria-label', `第${index + 1}局を一括解析に含める`);
+    check.addEventListener('change', handle(async () => { game.selected = check.checked; await saveSessionForView(state.session); }));
+    const button = document.createElement('button'); button.disabled = state.busy; button.setAttribute('aria-current', game.id === state.gameId ? 'true' : 'false');
+    const title = document.createElement('strong'); title.textContent = `第${index + 1}局 · ${labels[game.status] ?? '未解析'}${game.moveCount != null ? ` · ${game.moveCount}手` : ''}`;
+    const detail = document.createElement('small'); detail.textContent = `${formatTime(game.settings.startTime)}〜${formatTime(game.settings.endTime ?? state.video?.duration)} / ${game.settings.orientation === 'sente' ? '先手が下' : game.settings.orientation === 'gote' ? '後手が下' : '先後は未確定'}`;
+    if (!game.settings.orientation) detail.className = 'needs-review';
+    button.append(title, detail); button.addEventListener('click', handle(() => selectGame(game.id))); row.append(check, button); return row;
+  }));
+  $('queueMessage').textContent = state.session?.queue.status === 'running' ? '順番に解析しています。停止すると、続きから再開できます。' : state.session?.queue.status === 'paused' ? '一括解析を停止しました。「まとめて解析」で未完了の局から再開します。' : games.length ? '局を選ぶと設定と棋譜を確認できます。チェックした未完了の局を順番に解析します。' : '';
+}
+async function saveSessionForView(session) {
+  const version = state.videoVersion, videoId = state.video?.id;
+  const saved = await localEngine.saveSession(session);
+  if (version !== state.videoVersion || videoId !== state.video?.id) return false;
+  state.session = saved; return true;
+}
+async function commitGame() {
+  if (!state.gameId || !state.session) return true;
+  const session = JSON.parse(JSON.stringify(state.session)), gameId = state.gameId;
+  const game = session.games.find(item => item.id === gameId), settings = analysisSettings();
+  const key = s => JSON.stringify([s.startTime, s.endTime ?? null, s.sampleFps, s.profile, s.orientation || null, ...['x', 'y', 'width', 'height'].map(name => s.board[name])]);
+  const changed = key(game.settings) !== key(settings);
+  if (changed) {
+    game.settings = JSON.parse(JSON.stringify(settings)); game.jobId = null; game.moveCount = null;
+    game.status = settings.orientation ? 'ready' : 'needsReview'; game.detection = { ...game.detection, warnings: [], manual: true };
+  }
+  if (!await saveSessionForView(session)) return false;
+  if (changed && state.gameId === gameId) {
+    state.job = null; state.result = null; state.savedJob = null;
+    $('resultBody').hidden = true; $('emptyResult').hidden = false; $('savedResult').hidden = true; $('resumeButton').hidden = true; $('moveCount').textContent = '0 手';
+  }
+  return true;
+}
+async function selectGame(id, savePrevious = true) {
+  const selection = ++state.selectionRequest, previousVersion = state.videoVersion, videoId = state.video?.id, wasBusy = state.busy;
+  let version = previousVersion;
+  if (savePrevious) setBusy(true);
+  try {
+  if (savePrevious) {
+    if (hasUnsavedMoves()) throw new Error('入力した指し手の修正を保存してから局を切り替えてください。');
+    if (!await commitGame() || selection !== state.selectionRequest || previousVersion !== state.videoVersion || videoId !== state.video?.id) return;
+  }
+  const game = state.session.games.find(item => item.id === id);
+  if (!game) return;
+  version = ++state.videoVersion; ++state.frameRequest; clearTimeout(pollTimer); clearTimeout(frameTimer);
+  state.gameId = id; state.job = game.jobId; state.result = null; state.savedJob = game.jobId;
+  $('resultBody').hidden = true; $('emptyResult').hidden = false; $('savedResult').hidden = true; $('resumeButton').hidden = true; $('moveCount').textContent = '0 手';
+  $('saveGame').hidden = false; restoreSettings(game.settings); renderGames();
+  if (game.jobId) {
+    const job = await api(`/api/jobs/${game.jobId}`);
+    if (version !== state.videoVersion) return;
+    if (job.result) { state.result = job.result; renderResult(); }
+  }
+  if (version === state.videoVersion) await showFrame(game.settings.startTime);
+  if (version !== state.videoVersion || selection !== state.selectionRequest) return;
+  $('removeGame').disabled = state.busy || state.video.needsFile;
+  if (savePrevious) notice(`第${state.session.games.indexOf(game) + 1}局を開きました。開始・終了時刻、枠、先後はこの局に保存されます。`);
+  } finally { if (savePrevious && selection === state.selectionRequest && version === state.videoVersion && videoId === state.video?.id) setBusy(wasBusy); }
+}
+if (localEngine?.getSession) {
+  $('gamesPanel').hidden = false; $('autoBoard').hidden = false;
+  $('saveGame').addEventListener('click', handle(async () => {
+    if (hasUnsavedMoves()) throw new Error('先に指し手の修正を保存してください。');
+    if (await commitGame()) notice('この局の設定を保存しました。設定を変更した局は最初から解析します。');
+  }));
+  $('addGame').addEventListener('click', handle(async () => {
+    if (hasUnsavedMoves()) throw new Error('先に指し手の修正を保存してください。');
+    if (!await commitGame()) return;
+    const game = { id: crypto.randomUUID(), selected: true, status: 'needsReview', jobId: null,
+      settings: { ...analysisSettings(), board: { ...state.box }, startTime: displayedTime(), endTime: null, orientation: null } };
+    const session = JSON.parse(JSON.stringify(state.session));
+    session.games.push(game); session.games.sort((a, b) => a.settings.startTime - b.settings.startTime);
+    if (!await saveSessionForView(session)) return;
+    await selectGame(game.id, false); setBusy(false);
+    notice('対局を追加しました。開始・終了時刻と画面の下側を指定し、設定を保存してください。');
+  }));
+  $('removeGame').addEventListener('click', handle(async () => {
+    if (hasUnsavedMoves()) throw new Error('先に指し手の修正を保存してください。');
+    const session = JSON.parse(JSON.stringify(state.session)); session.games = session.games.filter(game => game.id !== state.gameId);
+    if (!await saveSessionForView(session)) return;
+    state.gameId = null; state.job = null; state.result = null;
+    $('resultBody').hidden = true; $('emptyResult').hidden = false; $('resumeButton').hidden = true; $('savedResult').hidden = true; $('moveCount').textContent = '0 手';
+    if (state.session.games.length) await selectGame(state.session.games[0].id, false);
+    setBusy(false); notice('対局を一覧から外しました。');
+  }));
+  $('autoBoard').addEventListener('click', handle(async () => {
+    const version = state.videoVersion; setBusy(true); notice('マス目と初期配置を確認し、盤面の枠を合わせています…');
+    try {
+      const found = await localEngine.detectBoard(state.video.id, displayedTime(), analysisSettings());
+      if (version !== state.videoVersion) return;
+      state.box = found.board; syncBoxInputs(); drawFrame();
+      notice('盤面の枠を補正しました。緑の9×9の線がマス目に重なるか確認してください。');
+    } finally { if (version === state.videoVersion) setBusy(false); }
+  }));
+  $('findGames').addEventListener('click', handle(async () => {
+    if (hasUnsavedMoves()) throw new Error('先に指し手の修正を保存してください。');
+    if (!await commitGame()) return;
+    state.scanning = true; setBusy(true);
+    $('progressArea').hidden = false; $('cancelButton').disabled = false; $('analysisProgress').value = 0;
+    notice('動画から初期配置と初手を探しています。見つかった局は端末内に保存します。');
+    try {
+      state.session = await localEngine.discoverGames(state.video.id, analysisSettings());
+      if (state.session.games.length) await selectGame(state.session.games[0].id, false);
+      notice(`${state.session.games.length}局の候補があります。${state.session.discovery.cancelled ? '探索は途中で停止しました。再探索で続きも確認できます。' : '各局の開始位置・先後を確認してください。見つからない局は手動で追加できます。'}`);
+    } finally { state.scanning = false; setBusy(false); $('cancelButton').disabled = true; }
+  }));
+  document.addEventListener('kifu-scan-progress', event => {
+    if (!state.scanning) return;
+    $('analysisProgress').value = event.detail.progress;
+    $('progressMessage').textContent = `対局を探しています · ${event.detail.games.length}局`;
+    $('progressDetail').textContent = `${Math.round(event.detail.progress * 100)}% · ${formatTime(event.detail.lastTime)}`;
+  });
+  document.addEventListener('kifu-session', event => {
+    if (state.video?.id !== event.detail.videoId) return;
+    const batchEnded = state.session?.queue.status === 'running' && event.detail.queue.status !== 'running';
+    state.session = event.detail; renderGames();
+    if (batchEnded && !state.scanning && !state.runningJob) setBusy(false);
+  });
+  document.addEventListener('kifu-game-started', handle(async event => {
+    if (state.video?.id !== event.detail.videoId) return;
+    state.runningJob = true; setBusy(true); await selectGame(event.detail.gameId, false);
+    state.job = event.detail.jobId; saveLocal('kifu-last-job', state.job);
+    $('progressArea').hidden = false; $('cancelButton').disabled = false; await pollJob();
+  }));
+  $('analyzeGames').addEventListener('click', handle(async () => {
+    if (hasUnsavedMoves()) throw new Error('先に指し手の修正を保存してください。');
+    if (!await commitGame()) return;
+    setBusy(true);
+    try { await localEngine.runGames(state.video.id); }
+    catch (error) { setBusy(false); throw error; }
+  }));
+}
 
 syncBoxInputs();
 handle(async () => {

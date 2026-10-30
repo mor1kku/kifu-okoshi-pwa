@@ -4,9 +4,11 @@ import math
 import cv2
 import numpy as np
 from backend.recognition import FrameRecognizer
+from backend.auto_setup import autoBoard, GameScanner
 from backend.records import compareMoves, exportRecord, parseRecord, replayMoves
 
 recognizer = None
+scanner = None
 
 
 def validateSettings(settings):
@@ -29,14 +31,21 @@ def validateSettings(settings):
 
 
 def bridgeCall(method, payload, pixels=None):
-    global recognizer
+    global recognizer, scanner
     value = json.loads(payload)
-    if method in ('start', 'frame'):
+    if method == 'scanStart':
+        scanner = GameScanner(value)
+        result = scanner.snapshot()
+    elif method in ('start', 'frame', 'autoBoard', 'scanFrame'):
         width, height = value['width'], value['height']
         if not 0 < width * height <= 20_000_000:
             raise ValueError('フレームの大きさが対応範囲外です。')
         data = np.asarray(pixels.to_py() if hasattr(pixels, 'to_py') else pixels, dtype=np.uint8)
         frame = cv2.cvtColor(data.reshape(height, width, 4), cv2.COLOR_RGBA2BGR)
+        if method == 'autoBoard':
+            return json.dumps(autoBoard(frame, value['profile'], value.get('board')), ensure_ascii=False, allow_nan=False)
+        if method == 'scanFrame':
+            return json.dumps(scanner.feed(frame, value['time']), ensure_ascii=False, allow_nan=False)
         if method == 'start':
             validateSettings(value['settings'])
             recognizer = FrameRecognizer(value['settings'], frame)
