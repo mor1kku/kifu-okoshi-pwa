@@ -36,10 +36,14 @@ with sync_playwright() as p:
     browser = p.chromium.launch(headless=True, channel='chrome')
     context = browser.new_context(viewport={'width': 390, 'height': 844}, device_scale_factor=1)
     page = context.new_page()
-    errors, requests = [], []
+    errors, requests, sends = [], [], []
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.on('console', lambda message: print('console:', message.text, flush=True) if message.type == 'error' else None)
-    context.on('request', lambda request: requests.append(request.url))
+    def recordRequest(request):
+        requests.append(request.url)
+        if request.method not in ('GET', 'HEAD'):
+            sends.append((request.method, request.url))
+    context.on('request', recordRequest)
     try:
         page.goto(args.url)
         page.wait_for_load_state('networkidle')
@@ -92,8 +96,9 @@ with sync_playwright() as p:
         if args.full:
             assert predicted == reference, '全手が一致しません。'
         assert not errors, errors
-        external = [url for url in requests if not url.startswith(('http://127.0.0.1:', 'blob:', 'data:'))]
+        external = [url for url in requests if not url.startswith((args.url, 'blob:', 'data:'))]
         assert not external, external
+        assert not sends, sends
         assert not any('/api/' in url for url in requests), 'APIサーバーへアクセスしています。'
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth'), '横方向にはみ出しています。'
         page.screenshot(path=str(outputDir / 'pwa-mobile.png'), full_page=True)
