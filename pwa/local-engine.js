@@ -239,6 +239,7 @@ export function kifLink(result) {
 export const mediaURL = id => mediaUrls.get(id) ?? '';
 export const storageKey = key => `kifu-pwa:${new URL('./', import.meta.url).pathname}:${key}`;
 export const canResume = id => Boolean(jobs.get(id)?.checkpoint && !jobs.get(id)?.result?.edited);
+export const canUpdate = () => !activeJob && !resumeIntent && pending.size === 0;
 export async function prepareOffline() {
   if (!('serviceWorker' in navigator)) throw new Error('このブラウザーではオフライン保存を使えません。SafariのHTTPSページで開いてください。');
   const registration = await new Promise((resolve, reject) => {

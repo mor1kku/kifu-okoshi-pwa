@@ -117,6 +117,15 @@ class GenericAdapter:
         occupancy = self.observation(observation['glyph'])['occupancy']
         if np.any(occupancy[codes != 0] < .35):
             raise ValueError('平手の初期配置にあるはずの駒が見つかりません。1手目が動く前へ開始時刻を戻し、盤面の枠も確認してください。')
+        # 枠が広すぎると駒が別のマスへはみ出す。同色・同種の駒字の整合性で検出する。
+        distances = []
+        for code in set(codes) - {0}:
+            group = observation['glyph'][codes == code]
+            if len(group) > 1:
+                for index in range(len(group)):
+                    distances.append(templateDistance(group[index:index + 1], np.delete(group, index, axis=0))[0])
+        if np.median(distances) > .10:
+            raise ValueError('駒字がマスに収まっていません。緑の線を盤の9×9マスに重ね、数字・外枠・駒台を含めずに範囲を合わせてください。')
 
     def costs(self, observation, templates):
         costs = np.zeros((81, 29), dtype=np.float32)
@@ -404,7 +413,7 @@ class FrameRecognizer:
         warnings.append('投了・時間切れなどの終局理由は自動判定していません。')
         return {'moves': moves, 'warnings': warnings, 'analyzedFrames': self.analyzedFrames,
                 'elapsedSeconds': round(elapsedSeconds, 2), 'lastTime': round(self.lastTime, 6),
-                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2.2', 'source': 'video-only'}
+                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2.3', 'source': 'video-only'}
 
     def moveCount(self):
         provisional = self.tracker.provisionalDrop

@@ -25,3 +25,7 @@ def testShortRecordingAndLateStartValidation():
         adapter = WarsAdapter()
         with pytest.raises(ValueError, match='1手目が動く前'):
             MoveTracker(adapter, adapter.observation(lateGlyph))
+        # 問い合わせの広すぎる枠では、誤った2手を出す前に範囲の修正を促す。
+        adapter = WarsAdapter()
+        with pytest.raises(ValueError, match='盤の9×9マス'):
+            MoveTracker(adapter, adapter.observation(fixture['misalignedGlyph']))

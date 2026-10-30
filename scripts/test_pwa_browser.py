@@ -22,6 +22,7 @@ parser.add_argument('--serve', action='store_true')
 parser.add_argument('--port', type=int, default=8002)
 parser.add_argument('--offline', action='store_true')
 parser.add_argument('--settings', help='任意動画を検証する盤面設定JSON')
+parser.add_argument('--expect-error', help='指定した説明で解析を拒否することを検証')
 args = parser.parse_args()
 rootDir = Path(__file__).resolve().parents[1]
 outputDir = rootDir / '.local' / 'pwa-validation'
@@ -112,6 +113,13 @@ with sync_playwright() as p:
                 break
         else:
             raise AssertionError('解析の時間制限を超えました。')
+        if args.expect_error:
+            assert args.expect_error in page.locator('#notice').inner_text(), page.locator('#notice').inner_text()
+            assert 'error' in page.locator('#notice').get_attribute('class')
+            assert not page.locator('#analyzeButton').is_disabled()
+            assert page.locator('#moveCount').inner_text() == '0 手'
+            print('PASS: invalid board rejected with actionable error', flush=True)
+            raise SystemExit(0)
         assert page.locator('#notice').get_attribute('class') == 'notice', page.locator('#notice').inner_text()
         assert not page.locator('#resultBody').is_hidden(), page.locator('#notice').inner_text()
         if args.visibility_resume:

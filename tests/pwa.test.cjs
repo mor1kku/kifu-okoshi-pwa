@@ -16,7 +16,7 @@ function engineHarness({ save = async () => {}, requestWake } = {}) {
     Worker: class { constructor() { worker = this; } postMessage(data) { messages.push(data); } },
   });
   const source = fs.readFileSync('pwa/local-engine.js', 'utf8').replace(/^import .*;\r?\n/gm, '').replace(/\bexport /g, '').replace(/import\.meta\.url/g, "'https://example.github.io/kifu/local-engine.js'");
-  vm.runInContext(source + '\nglobalThis.testApi = { runJob, request, jobs, files, get active() { return activeJob; } };', context);
+  vm.runInContext(source + '\nglobalThis.testApi = { runJob, request, jobs, files, canUpdate, get active() { return activeJob; } };', context);
   const api = context.testApi;
   const job = { id: 'job', videoId: 'video', video: { name: 'video.mp4', duration: 100, width: 100, height: 200, fps: 60 }, settings: { startTime: 3 }, moveCount: 2, time: 4 };
   api.jobs.set(job.id, job); api.files.set(job.videoId, {});
@@ -87,11 +87,13 @@ test('ロック解除待ちの手動停止でも保存済みの停止理由を�
   const running = app.start(); await flush();
   app.visibility('hidden'); app.respond(true); await flush();
   assert.equal(app.job.status, 'cancelled');
+  assert.equal(app.api.canUpdate(), false);
   await app.api.request('/api/jobs/job/cancel');
   assert.equal(app.job.result.stopReason, 'user');
   assert.equal(app.writes.filter(write => write.key === 'job:job').at(-1).value.stopReason, 'user');
   app.visibility('visible'); release.resolve(); await running;
   assert.equal(app.messages.filter(message => message.method === 'analyze').length, 1);
+  assert.equal(app.api.canUpdate(), true);
 });
 
 test('最後の進捗通知が古くても完了時の手数と時刻を結果に揃える', async () => {

@@ -41,7 +41,7 @@ function setBusy(value) {
   for (const id of ['analyzeButton', 'videoFile', 'sampleButton', 'sampleSelect', 'savedResult', 'saveEdits', 'editMoves', 'termination', 'referenceFile', 'profile', 'orientation', 'startTime', 'endTime', 'sampleFps', 'useFrame', 'loadProfile', 'boxX', 'boxY', 'boxWidth', 'boxHeight']) {
     $(id).disabled = value || ((!state.video || state.video.needsFile) && ['analyzeButton', 'useFrame'].includes(id));
   }
-  if (localEngine) $('resumeButton').disabled = value || !state.video || state.video.needsFile;
+  if (localEngine) { $('resumeButton').disabled = value || !state.video || state.video.needsFile; $('updateButton').disabled = value; }
 }
 
 function syncBoxInputs() {
@@ -219,7 +219,7 @@ async function pollJob() {
     const finished = ['complete', 'cancelled', 'failed'].includes(job.status);
     const moveCount = finished ? job.result?.moves.length ?? job.moveCount ?? 0 : job.moveCount ?? job.result?.moves.length ?? 0;
     $('progressDetail').textContent = `${Math.round((job.progress ?? 0) * 100)}% · ${moveCount}手${job.time != null ? ` · ${formatTime(job.time)}` : ''}`;
-    if (!finished) $('moveCount').textContent = `解析中 ${moveCount} 手`;
+    $('moveCount').textContent = `${finished ? '' : '解析中 '}${moveCount} 手`;
     if (job.status === 'failed') { setBusy(false); $('cancelButton').disabled = true; if (localEngine && job.result) { state.result = job.result; renderResult(); } notice(job.error, true); return; }
     if (['complete', 'cancelled'].includes(job.status)) {
       setBusy(false); $('cancelButton').disabled = true;
@@ -238,6 +238,16 @@ async function pollJob() {
 }
 $('cancelButton').addEventListener('click', handle(async () => { await api(`/api/jobs/${state.job}/cancel`, { method: 'POST' }); $('cancelButton').disabled = true; $('progressMessage').textContent = '停止を待っています…'; }));
 if (localEngine) {
+  let updateLocked = false;
+  document.addEventListener('kifu-update-request', event => {
+    const busy = state.busy || localEngine.canUpdate?.() === false;
+    const edited = state.result && ($('editMoves').value.trim() !== state.result.moves.map(row => row.usi).join('\n') || $('termination').value !== (state.result.termination || ''));
+    if (busy || edited) {
+      event.preventDefault(); notice(busy ? '動画の読込や解析が終わってから更新してください。' : '入力した指し手の修正を保存してから更新してください。', true); return;
+    }
+    updateLocked = true; setBusy(true);
+  });
+  document.addEventListener('kifu-update-finished', () => { if (updateLocked) { updateLocked = false; setBusy(false); } });
   document.addEventListener('kifu-message', event => notice(event.detail.message, event.detail.error));
   document.addEventListener('kifu-job-resumed', event => {
     if (state.job !== event.detail.id || state.video?.id !== event.detail.videoId) return;

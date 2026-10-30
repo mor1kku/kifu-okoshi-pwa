@@ -2,7 +2,7 @@ const base = self.registration.scope;
 const cachePrefix = `kifu-pwa:${new URL(base).pathname}:`;
 const cacheName = `${cachePrefix}__BUILD_ID__`;
 const url = path => new URL(path, base).href;
-const shell = ['index.html', 'style.css', 'app.js', 'bootstrap.js', 'local-engine.js', 'storage.js', 'worker.js', 'profiles.json', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'asset-manifest.json'];
+const shell = ['index.html', 'style.css', 'app.js', 'bootstrap.js', 'updates.js', 'local-engine.js', 'storage.js', 'worker.js', 'profiles.json', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'asset-manifest.json'];
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const response = await fetch(url('asset-manifest.json'), { cache: 'no-store' });
@@ -42,6 +42,17 @@ self.addEventListener('fetch', event => {
   })());
 });
 self.addEventListener('message', event => {
+  if (event.data?.type === 'activate-update') {
+    event.waitUntil((async () => {
+      const port = event.ports[0];
+      try {
+        const clients = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter(client => client.url.startsWith(base));
+        if (clients.length > 1) throw new Error('ほかの「棋譜おこし」のタブやホーム画面版を閉じてから、もう一度更新してください。');
+        await self.skipWaiting(); port.postMessage({ done: true });
+      } catch (error) { port.postMessage({ error: error.message }); }
+    })());
+    return;
+  }
   if (event.data?.type !== 'prepare-offline') return;
   const port = event.ports[0];
   event.waitUntil((async () => {

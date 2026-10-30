@@ -5,7 +5,7 @@ const python = process.env.PYTHON_EXECUTABLE || (existsSync(localPython) ? local
 const action = process.argv[2];
 if (!['prepare', 'build'].includes(action)) throw new Error('prepare または build を指定してください。');
 if (action === 'build') {
-  for (const file of ['frontend/app.js', 'pwa/worker.js', 'pwa/local-engine.js', 'pwa/storage.js', 'pwa/bootstrap.js', 'pwa/sw.js']) {
+  for (const file of ['frontend/app.js', 'pwa/worker.js', 'pwa/local-engine.js', 'pwa/storage.js', 'pwa/bootstrap.js', 'pwa/updates.js', 'pwa/sw.js']) {
     execFileSync(process.execPath, ['--check', file], { stdio: 'inherit' });
   }
 }

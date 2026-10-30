@@ -72,6 +72,18 @@ def testBlankStartingFrameIsRejected():
 
 
 @pytest.mark.parametrize('profile', ['generic', 'wars'])
+def testInconsistentInitialGlyphsRejectMisalignedBoard(profile):
+    adapter = GenericAdapter() if profile == 'generic' else WarsAdapter()
+    observation = adapter.features(extractCells(renderBoard(shogi.Board()), {'x': 0, 'y': 0, 'width': 1, 'height': 1}))
+    # 枠のずれで同じ駒字が各マスへ異なる形ではみ出した状態を再現する。
+    rng = np.random.default_rng(27)
+    for square in list(range(18, 27)) + list(range(54, 63)):
+        observation['glyph'][square] = (rng.random((24, 16)) > .5).astype(np.float32)
+    with pytest.raises(ValueError, match='盤の9×9マス'):
+        MoveTracker(adapter, observation)
+
+
+@pytest.mark.parametrize('profile', ['generic', 'wars'])
 def testStartingAfterFirstMoveIsRejected(profile):
     board = shogi.Board()
     board.push_usi('7g7f')

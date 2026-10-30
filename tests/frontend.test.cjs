@@ -21,8 +21,24 @@ function harness(fetch, localEngine) {
     fetch: url => url === '/api/sample' ? new Promise(() => {}) : fetch(url),
   });
   vm.runInContext(source + '\nglobalThis.appTest = { state, setVideo, setBusy, restoreSettings, pollJob, renderResult, analysisSettings };', context);
-  return { ...context.appTest, element, dispatch: (type, detail) => handlers[type]({ detail }) };
+  return { ...context.appTest, element, dispatch: (type, detail, preventDefault = () => {}) => handlers[type]({ detail, preventDefault }) };
 }
+
+test('解析中と未保存の棋譜がある間はアプリ更新で再読み込みしない', () => {
+  let engineReady = true;
+  const app = harness(null, { request: async () => new Promise(() => {}), canUpdate: () => engineReady });
+  let refused = 0;
+  app.setBusy(true); app.dispatch('kifu-update-request', null, () => refused++);
+  assert.equal(refused, 1);
+  app.setBusy(false); app.state.result = { moves: [], termination: null };
+  app.element('editMoves').value = '7g7f'; app.element('termination').value = '';
+  app.dispatch('kifu-update-request', null, () => refused++); assert.equal(refused, 2);
+  app.element('editMoves').value = '';
+  engineReady = false; app.dispatch('kifu-update-request', null, () => refused++); assert.equal(refused, 3);
+  engineReady = true;
+  app.dispatch('kifu-update-request', null, () => refused++); assert.equal(refused, 3); assert.equal(app.state.busy, true);
+  app.dispatch('kifu-update-finished'); assert.equal(app.state.busy, false);
+});
 
 test('結果の手数を完了欄に使い、自動再開時には進捗の取得を再開する', async () => {
   let reads = 0;

@@ -2,7 +2,7 @@
   "name": "kifu-okoshi",
   "private": true,
   "scripts": {
-    "test": "node --test tests/frontend.test.cjs tests/pwa.test.cjs",
+    "test": "node --test tests/frontend.test.cjs tests/pwa.test.cjs tests/updates.test.cjs",
     "build": "node scripts/build.mjs",
     "check": "node --check frontend/app.js",
     "prepare:pwa": "node scripts/pwa.mjs prepare",
