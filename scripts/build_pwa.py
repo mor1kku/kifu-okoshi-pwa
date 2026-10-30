@@ -68,7 +68,7 @@ html = (rootDir / 'frontend/index.html').read_text(encoding='utf-8')
 html = html.replace('href="/style.css"', 'href="./style.css"').replace('href="/"', 'href="./"').replace('src="/app.js"', 'src="./bootstrap.js"')
 html = html.replace('</head>', '<link rel="manifest" href="./manifest.webmanifest">\n<link rel="icon" href="./icons/icon-192.png">\n<link rel="apple-touch-icon" href="./icons/icon-192.png">\n<meta name="apple-mobile-web-app-capable" content="yes">\n</head>')
 html = html.replace('試作版 / 平手対応', '端末内解析')
-html = html.replace('動画から棋譜へ <span class="version">', 'v1.2 <span class="version">')
+html = html.replace('動画から棋譜へ <span class="version">', 'v1.2.1 <span class="version">')
 html = html.replace('ローカル起動中はこのPCで処理します。<br>クラウド利用時は接続先サーバーで処理します。',
                     '動画はこの端末内で処理し、送信しません。<br>解析中は画面を開いておいてください。<br>初回は解析エンジンをダウンロードします。')
 html = html.replace('<footer>', '<section class="step"><h2>iPhoneで使う</h2><p>Safariの共有メニューから「ホーム画面に追加」。初回は通信できる場所で準備してください。</p><button id="offlineButton" class="secondary">オフライン用にアプリを保存</button><p class="field-help">動画の原本は「写真」または「ファイル」に保存してください。途中から再開する場合は同じ動画を選び直します。端末の保存領域が消去される場合に備え、棋譜はKIFでも保存してください。</p></section><footer>')

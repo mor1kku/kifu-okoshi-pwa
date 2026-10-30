@@ -71,6 +71,71 @@ def testBlankStartingFrameIsRejected():
         MoveTracker(adapter, features)
 
 
+@pytest.mark.parametrize('profile', ['generic', 'wars'])
+def testStartingAfterFirstMoveIsRejected(profile):
+    board = shogi.Board()
+    board.push_usi('7g7f')
+    with pytest.raises(ValueError, match='1手目が動く前'):
+        FrameRecognizer({'startTime': 0, 'profile': profile, 'orientation': 'sente',
+                         'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+
+
+@pytest.mark.parametrize('resume', [False, True])
+def testWrongFirstMoverReportsOrientation(resume):
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    board.turn = shogi.WHITE
+    board.push_usi('3c3d')
+    core.feed(renderBoard(board), .1)
+    assert core.tracker.firstMoverMismatch == 1
+    if resume:
+        core = FrameRecognizer.restore(json.loads(json.dumps(core.checkpoint())))
+    with pytest.raises(ValueError, match='画面の下側'):
+        core.feed(renderBoard(board), .2)
+    assert core.result()['moves'] == []
+
+
+def testBriefOppositeSideAnimationDoesNotRejectOrientation():
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    board.turn = shogi.WHITE
+    board.push_usi('3c3d')
+    core.feed(renderBoard(board), .1)
+    board = shogi.Board()
+    core.feed(renderBoard(board), .2)
+    assert core.tracker.firstMoverMismatch == 0
+    board.push_usi('7g7f')
+    core.feed(renderBoard(board), .3)
+    core.feed(renderBoard(board), .4)
+    assert [row['usi'] for row in core.result()['moves']] == ['7g7f']
+
+
+def testFirstMoverIsCheckedWhileDestinationIsFlashing():
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    board.remove_piece_at(shogi.SQUARE_NAMES.index('3c'))
+    core.feed(renderBoard(board), .1)
+    with pytest.raises(ValueError, match='画面の下側'):
+        core.feed(renderBoard(board), .2)
+
+
+def testDifferentFadingPawnsDoNotConfirmAWrongFirstMover():
+    board = shogi.Board()
+    core = FrameRecognizer({'startTime': 0, 'profile': 'wars', 'orientation': 'sente',
+                            'board': {'x': 0, 'y': 0, 'width': 1, 'height': 1}}, renderBoard(board))
+    for time, square in [(.1, '3c'), (.2, '7c')]:
+        frameBoard = shogi.Board()
+        frameBoard.remove_piece_at(shogi.SQUARE_NAMES.index(square))
+        core.feed(renderBoard(frameBoard), time)
+        core = FrameRecognizer.restore(json.loads(json.dumps(core.checkpoint())))
+    assert core.tracker.firstMoverMismatch == 1
+    core.feed(renderBoard(board), .3)
+    assert core.tracker.firstMoverMismatch == 0
+
+
 def testCostsDoNotMutateFeatures():
     adapter = GenericAdapter()
     features = adapter.features(extractCells(renderBoard(shogi.Board()), {'x': 0, 'y': 0, 'width': 1, 'height': 1}))

@@ -19,7 +19,7 @@ function harness(fetch) {
     Image: class { naturalWidth = 100; naturalHeight = 100; async decode() {} },
     fetch: url => url === '/api/sample' ? new Promise(() => {}) : fetch(url),
   });
-  vm.runInContext(source + '\nglobalThis.appTest = { state, setVideo, setBusy, restoreSettings, pollJob, renderResult };', context);
+  vm.runInContext(source + '\nglobalThis.appTest = { state, setVideo, setBusy, restoreSettings, pollJob, renderResult, analysisSettings };', context);
   return { ...context.appTest, element };
 }
 
@@ -65,4 +65,30 @@ test('解析設定の復元・再生中の開始位置・失われたジョブ',
   app.renderResult();
   assert.equal(app.state.savedJob, 'new-result');
   assert.equal(app.element('savedResult').hidden, false);
+});
+
+test('同じ動画の開始位置を保ち、別動画には前の盤面設定を流用しない', async () => {
+  const app = harness(async url => response(url.endsWith('/latest-result') ? { id: null } : {}));
+  const video = id => ({ id, name: id, duration: 100, width: 100, height: 100, fps: 30, size: 1000 });
+  await app.setVideo(video('A'));
+  const settings = { profile: 'wars', orientation: 'gote', sampleFps: 60, startTime: 3, endTime: 80, board: { x: .1, y: .2, width: .8, height: .5 } };
+  app.restoreSettings(settings);
+  await app.setVideo(video('A'));
+  assert.deepEqual(JSON.parse(JSON.stringify(app.analysisSettings())), { ...settings, videoId: 'A' });
+  await app.setVideo(video('B'));
+  const fresh = app.analysisSettings();
+  assert.equal(fresh.startTime, 0); assert.equal(fresh.endTime, null);
+  assert.equal(fresh.profile, 'kioh'); assert.equal(fresh.orientation, 'sente'); assert.equal(fresh.sampleFps, 12);
+  assert.notEqual(fresh.board.x, settings.board.x);
+});
+
+test('動画用設定JSONの開始時刻をプレビューと解析に適用する', async () => {
+  const app = harness(async url => response(url.endsWith('/latest-result') ? { id: null } : {}));
+  await app.setVideo({ id: 'A', name: 'A', duration: 10, width: 100, height: 100, fps: 60, size: 1000 });
+  const profile = { version: 1, profile: 'wars', orientation: 'gote', sampleFps: 12, startTime: 3, board: { x: 0, y: 0, width: 1, height: 1 } };
+  await app.element('profileFile').listeners.change({ target: { files: [{ size: 1000, text: async () => JSON.stringify(profile) }], value: 'settings' } });
+  assert.equal(app.analysisSettings().startTime, 3);
+  assert.equal(app.analysisSettings().orientation, 'gote');
+  assert.equal(app.state.frameTime, 3);
+  assert.match(app.element('notice').textContent, /開始時刻も適用/);
 });

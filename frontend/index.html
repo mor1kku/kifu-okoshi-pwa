@@ -28,12 +28,12 @@
         </section>
         <section class="step"><div class="section-title"><span class="step-number">02</span><h2>盤面を合わせる</h2></div>
           <label class="field-label" for="profile">盤と駒の見た目</label>
-          <select id="profile"><option value="kioh">棋桜 — 黄色の駒・青い盤</option><option value="wars">将棋ウォーズ — 木目の盤・二文字の駒</option><option value="generic">ほかのアプリ — 初期配置で照合</option></select>
+          <select id="profile"><option value="kioh">棋桜 — 黄色の駒・青い盤</option><option value="wars">将棋ウォーズ — 木目の盤</option><option value="generic">ほかのアプリ — 初期配置で照合</option></select>
           <p class="field-help">ほかの見た目は試験対応です。盤面が固定された画面録画を使用してください。</p>
           <label class="field-label" for="orientation">画面の下側</label><select id="orientation"><option value="sente">先手</option><option value="gote">後手（180°反転）</option></select>
           <label class="field-label" for="startTime">初期配置が見える時刻（秒）</label><input id="startTime" type="number" min="0" value="0" step="0.05">
           <p class="field-help">平手の初期配置で、開始演出が消えた直後。1手目が動く前を選んでください。</p>
-          <button id="useFrame" class="secondary compact" disabled>表示中のフレームを開始位置に</button>
+          <button id="useFrame" class="secondary compact" disabled>表示中のフレームを開始位置に</button><p class="field-help">駒がまだ一枚も動いていない初期配置を選んでください。画面の下側が先手とは限りません。</p>
           <details><summary>読み取り・盤面の詳細設定</summary>
             <label class="field-label" for="endTime">終了時刻（秒・空欄で最後まで）</label><input id="endTime" type="number" min="0" step="0.1" placeholder="動画の最後まで">
             <label class="field-label" for="sampleFps">読み取り密度</label><select id="sampleFps"><option value="6">6 fps — 軽量</option><option value="12" selected>12 fps — 標準</option><option value="30">30 fps — 細かく確認</option><option value="60">60 fps — 全フレーム優先</option></select><p class="field-help">将棋ウォーズは、どの設定でも盤面が変わる区間を自動で細かく読み取ります。</p>

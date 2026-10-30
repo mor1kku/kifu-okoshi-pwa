@@ -113,6 +113,10 @@ class GenericAdapter:
         emptyInk = self.emptyTemplates.mean()
         if occupiedInk < .02 or occupiedInk < emptyInk + .025:
             raise ValueError('駒字と空のマスを区別できません。盤面範囲と初期配置の時刻を調整してください。この見た目は未対応の可能性があります。')
+        # 初回のoccupancyは未校正なので、空マスの見本を作ってから再判定する。
+        occupancy = self.observation(observation['glyph'])['occupancy']
+        if np.any(occupancy[codes != 0] < .35):
+            raise ValueError('平手の初期配置にあるはずの駒が見つかりません。1手目が動く前へ開始時刻を戻し、盤面の枠も確認してください。')
 
     def costs(self, observation, templates):
         costs = np.zeros((81, 29), dtype=np.float32)
@@ -161,6 +165,8 @@ class MoveTracker:
         self.pendingOccupancy = None
         self.pendingCosts = None
         self.provisionalDrop = None
+        self.firstMoverMismatch = 0
+        self.firstMoverSource = None
         self.refreshMoves()
 
     def refreshMoves(self):
@@ -206,6 +212,34 @@ class MoveTracker:
         finally:
             self.board.pop()
 
+    def checkFirstMover(self, costs, occupancy, currentScore, ownBestScore):
+        if self.moves or self.board.move_number != 1 or not isinstance(self.adapter, WarsAdapter):
+            return
+        opposite = shogi.Board()
+        opposite.turn = shogi.WHITE
+        candidates = []
+        for move in opposite.legal_moves:
+            projected = self.codes.copy()
+            projected[move.from_square] = 0
+            projected[move.to_square] = 14 + opposite.piece_type_at(move.from_square)
+            candidates.append((float(costs[np.arange(81), projected].sum()), move, projected))
+        candidates.sort(key=lambda value: value[0])
+        score, move, projected = candidates[0]
+        mismatch = ((occupancy > .6) & (projected == 0)) | ((occupancy < .35) & (projected != 0))
+        missing = np.flatnonzero((occupancy < .25) & (self.codes != 0))
+        # 移動先が発光中でも、最初に相手の歩だけが元のマスから消えれば向きを確認できる。
+        oppositePawnLeft = (missing.size == 1 and self.codes[missing[0]] == 14 + shogi.PAWN and
+                            costs[missing[0], 0] < .15 and currentScore / 81 < .08 and
+                            np.count_nonzero((occupancy > .6) & (self.codes == 0)) <= 1)
+        oppositeMoved = oppositePawnLeft or (currentScore - score > .55 and ownBestScore - score > .3 and
+                         candidates[1][0] - score > .18 and score / 81 < .12 and
+                         occupancy[move.from_square] < .25 and occupancy[move.to_square] > .6 and not mismatch.any())
+        source = int(missing[0]) if oppositePawnLeft else move.from_square if oppositeMoved else None
+        self.firstMoverMismatch = (self.firstMoverMismatch + 1 if source == self.firstMoverSource else 1) if source is not None else 0
+        self.firstMoverSource = source
+        if self.firstMoverMismatch >= 2:
+            raise ValueError('最初に動いた駒が先後の設定と一致しません。「画面の下側」の先手・後手を切り替え、1手目が動く前から解析してください。')
+
     def observe(self, observation, timestamp):
         costs = self.adapter.costs(observation, self.templates)
         occupancy = observation['occupancy']
@@ -246,6 +280,7 @@ class MoveTracker:
             return
         options.sort(key=lambda option: option[0])
         bestScore, move, code = options[0]
+        self.checkFirstMover(costs, occupancy, currentScore, bestScore)
         margin = options[1][0] - bestScore if len(options) > 1 else 10
         gain = currentScore - bestScore
         # 終局画面・フェードなど、盤全体の見た目が変わるフレームは採用しない。
@@ -320,7 +355,7 @@ class FrameRecognizer:
             return
         observation = self.adapter.features(extractCells(frame, self.settings['board'], self.settings['orientation']))
         tracker = self.tracker
-        changed = self.previousObservation is None or self.lastAccepted or tracker.pending is not None
+        changed = self.previousObservation is None or self.lastAccepted or tracker.pending is not None or tracker.firstMoverMismatch > 0
         if not changed:
             glyphChange = np.mean(abs(observation['glyph'] - self.previousObservation['glyph']), axis=(1, 2)).max()
             occupancyChange = abs(observation['occupancy'] - self.previousObservation['occupancy']).max()
@@ -365,7 +400,7 @@ class FrameRecognizer:
         warnings.append('投了・時間切れなどの終局理由は自動判定していません。')
         return {'moves': moves, 'warnings': warnings, 'analyzedFrames': self.analyzedFrames,
                 'elapsedSeconds': round(elapsedSeconds, 2), 'lastTime': round(self.lastTime, 6),
-                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2', 'source': 'video-only'}
+                'cancelled': cancelled, 'recognitionIncomplete': incomplete, 'engineVersion': '1.2.1', 'source': 'video-only'}
 
     def moveCount(self):
         provisional = self.tracker.provisionalDrop
@@ -382,6 +417,8 @@ class FrameRecognizer:
                 'pendingOccupancy': tracker.pendingOccupancy.tolist() if tracker.pending is not None and tracker.pendingOccupancy is not None else None,
                 'pendingCosts': tracker.pendingCosts.tolist() if tracker.pending is not None and tracker.pendingCosts is not None else None,
                 'provisionalDrop': tracker.provisionalDrop,
+                'firstMoverMismatch': tracker.firstMoverMismatch,
+                'firstMoverSource': tracker.firstMoverSource,
                 'previousObservation': None if self.previousObservation is None else
                     {key: value.tolist() for key, value in self.previousObservation.items()},
                 'lastAccepted': self.lastAccepted, 'mismatchFrames': self.mismatchFrames, 'trackingLost': self.trackingLost, 'frameUsable': tracker.frameUsable,
@@ -415,6 +452,8 @@ class FrameRecognizer:
         tracker.pendingOccupancy = None if checkpoint.get('pendingOccupancy') is None else np.array(checkpoint['pendingOccupancy'], dtype=np.float32)
         tracker.pendingCosts = None if checkpoint.get('pendingCosts') is None else np.array(checkpoint['pendingCosts'], dtype=np.float32)
         tracker.provisionalDrop = checkpoint.get('provisionalDrop')
+        tracker.firstMoverMismatch = checkpoint.get('firstMoverMismatch', 0)
+        tracker.firstMoverSource = checkpoint.get('firstMoverSource')
         instance.tracker = tracker
         previous = checkpoint['previousObservation']
         instance.previousObservation = None if previous is None else {key: np.array(value, dtype=np.float32) for key, value in previous.items()}

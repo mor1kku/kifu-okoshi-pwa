@@ -92,6 +92,7 @@ async function showFrame(time) {
 }
 
 async function setVideo(video, useSample = false) {
+  const previousSettings = state.video?.id === video.id ? analysisSettings() : null;
   const version = ++state.videoVersion;
   ++state.frameRequest; clearTimeout(frameTimer); setBusy(true);
   state.video = video; state.result = null; state.job = null; state.savedJob = null; state.image = null;
@@ -106,8 +107,8 @@ async function setVideo(video, useSample = false) {
   for (const id of ['timeline', 'previewTime', 'prevFrame', 'nextFrame', 'togglePlayer']) $(id).disabled = Boolean(video.needsFile);
   if (localEngine) { $('resumeButton').hidden = true; $('previewCanvas').hidden = Boolean(video.needsFile); }
   $('timeline').max = Math.max(0, video.duration - .05); $('previewTime').max = video.duration - .05;
-  $('startTime').value = '0'; $('endTime').value = ''; $('progressArea').hidden = true;
-  if (video.suggestedSettings) restoreSettings(video.suggestedSettings);
+  $('progressArea').hidden = true;
+  restoreSettings(previousSettings ?? video.suggestedSettings ?? { startTime: 0, endTime: null, profile: 'kioh', orientation: 'sente', sampleFps: 12, board: kiohBox() });
   $('savedResult').hidden = true;
   try {
   const saved = await api(`/api/videos/${video.id}/latest-result`);
@@ -188,7 +189,10 @@ $('profileFile').addEventListener('change', handle(async (event) => {
     if (file.size > 100000) throw new Error('設定ファイルが大きすぎます。');
     const profile = JSON.parse(await file.text());
     if (profile.version !== 1 || !profile.board || !validateBox(profile.board) || !['kioh', 'wars', 'generic'].includes(profile.profile) || !['sente', 'gote'].includes(profile.orientation) || ![6, 12, 30, 60].includes(profile.sampleFps)) throw new Error('対応する盤面設定JSONではありません。');
-    state.box = profile.board; $('profile').value = profile.profile; $('orientation').value = profile.orientation; $('sampleFps').value = profile.sampleFps; syncBoxInputs(); drawFrame(); notice('盤面設定を読み込みました。動画に合うか枠を確認してください。');
+    if (profile.startTime != null && (!Number.isFinite(profile.startTime) || profile.startTime < 0 || (state.video && profile.startTime >= state.video.duration))) throw new Error('設定の開始時刻が動画の範囲外です。');
+    state.box = profile.board; $('profile').value = profile.profile; $('orientation').value = profile.orientation; $('sampleFps').value = profile.sampleFps;
+    if (profile.startTime != null) { $('startTime').value = profile.startTime; $('endTime').value = ''; await showFrame(profile.startTime); }
+    syncBoxInputs(); drawFrame(); notice(`盤面設定を読み込みました。${profile.startTime != null ? '開始時刻も適用しました。' : ''}動画に合うか枠を確認してください。`);
   } finally { event.target.value = ''; }
 }));
 
@@ -271,7 +275,7 @@ function renderResult() {
   $('savedResult').textContent = `保存済みの解析を開く（${result.moves.length}手${result.cancelled ? '・途中' : ''}）`;
   $('resultBody').hidden = false; $('emptyResult').hidden = true; $('moveCount').textContent = `${result.moves.length} 手`;
   const reviewCount = result.moves.filter((row) => row.review).length;
-  $('resultSummary').textContent = `${result.moves.length}手を抽出 · 要確認 ${reviewCount}手${result.edited ? ' · 修正済み' : ''}${result.cancelled ? ' · 途中停止' : ''}${result.recognitionIncomplete ? ' · 読み取り不足の可能性' : ''}。終局理由は映像で確認してください。`;
+  $('resultSummary').textContent = `${result.moves.length}手を抽出 · 要確認 ${reviewCount}手${result.edited ? ' · 修正済み' : ''}${result.cancelled ? ' · 途中停止' : ''}${result.recognitionIncomplete ? ' · 読み取り不足の可能性' : ''}${result.engineVersion ? ` · 解析v${result.engineVersion}` : ''}。終局理由は映像で確認してください。`;
   $('moveList').replaceChildren(...result.moves.map((row, index) => {
     const button = document.createElement('button'); button.className = 'move-row'; button.dataset.index = index;
     for (const [className, value] of [['move-number', row.number], ['', (index % 2 ? '△ ' : '▲ ') + row.label], ['move-time', formatTime(row.time)], ['review-mark', row.review ? '!' : '']]) { const span = document.createElement('span'); span.className = className; span.textContent = value; button.append(span); }
