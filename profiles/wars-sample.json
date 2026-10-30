@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sampleFile": "20261029_135654000_iOS.MP4",
+  "startTime": 10.6,
+  "profile": "wars",
+  "orientation": "sente",
+  "sampleFps": 12,
+  "board": {
+    "x": 0.01932367149758454,
+    "y": 0.2822222222222222,
+    "width": 0.961352657004831,
+    "height": 0.4822222222222222
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "sampleFile": "20261025_143127000_iOS.MP4",
+  "startTime": 23.6,
+  "profile": "kioh",
+  "orientation": "sente",
+  "sampleFps": 12,
+  "board": {
+    "x": 0.021739130434782608,
+    "y": 0.25555555555555554,
+    "width": 0.9565217391304348,
+    "height": 0.4866666666666667
+  }
+}

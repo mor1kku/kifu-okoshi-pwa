@@ -1,0 +1,10 @@
+services:
+  app:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - kifu-data:/data
+    restart: unless-stopped
+volumes:
+  kifu-data:

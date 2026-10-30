@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#223c34">
+  <title>棋譜おこし — 動画を、一手ずつ。</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/" aria-label="棋譜おこし ホーム"><span class="crest">歩</span><span>棋譜おこし<small>KIFU OKOSHI</small></span></a>
+    <div class="masthead-note"><span class="status-dot"></span>動画から棋譜へ <span class="version">試作版 / 平手対応</span></div>
+  </header>
+  <main>
+    <div class="intro"><div><p class="eyebrow">映像に残った一局を、手元の棋譜に。</p><h1>動画を、<em>一手ずつ。</em></h1></div><p class="intro-note">盤面を合わせる。指し手を確かめる。<br>大切な一局を、KIFで持ち出せます。</p></div>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <div class="workspace">
+      <aside class="setup-panel">
+        <section class="step"><div class="section-title"><span class="step-number">01</span><h2>動画を選ぶ</h2></div>
+          <label class="upload-area" for="videoFile"><span class="upload-icon">＋</span><strong>対局動画を開く</strong><span>MP4 / MOV / WebM など</span><input id="videoFile" type="file" accept="video/*,.mkv" class="visually-hidden"></label>
+          <label id="sampleLabel" class="field-label" for="sampleSelect" hidden>フォルダー内の動画</label>
+          <select id="sampleSelect" hidden></select>
+          <button id="sampleButton" class="text-button" hidden>選択した動画を開く <span>↗</span></button>
+          <div id="videoInfo" class="file-info" hidden></div>
+          <button id="savedResult" class="text-button" hidden>保存済みの解析を開く</button>
+          <progress id="uploadProgress" max="100" value="0" hidden aria-label="動画のアップロード進捗"></progress>
+        </section>
+        <section class="step"><div class="section-title"><span class="step-number">02</span><h2>盤面を合わせる</h2></div>
+          <label class="field-label" for="profile">盤と駒の見た目</label>
+          <select id="profile"><option value="kioh">棋桜 — 黄色の駒・青い盤</option><option value="wars">将棋ウォーズ — 木目の盤・二文字の駒</option><option value="generic">ほかのアプリ — 初期配置で照合</option></select>
+          <p class="field-help">ほかの見た目は試験対応です。盤面が固定された画面録画を使用してください。</p>
+          <label class="field-label" for="orientation">画面の下側</label><select id="orientation"><option value="sente">先手</option><option value="gote">後手（180°反転）</option></select>
+          <label class="field-label" for="startTime">初期配置が見える時刻（秒）</label><input id="startTime" type="number" min="0" value="0" step="0.05">
+          <p class="field-help">平手の初期配置で、開始演出が消えた直後。1手目が動く前を選んでください。</p>
+          <button id="useFrame" class="secondary compact" disabled>表示中のフレームを開始位置に</button>
+          <details><summary>読み取り・盤面の詳細設定</summary>
+            <label class="field-label" for="endTime">終了時刻（秒・空欄で最後まで）</label><input id="endTime" type="number" min="0" step="0.1" placeholder="動画の最後まで">
+            <label class="field-label" for="sampleFps">読み取り密度</label><select id="sampleFps"><option value="6">6 fps — ゆっくりした動画</option><option value="12" selected>12 fps — 標準</option><option value="30">30 fps — 速い動画</option><option value="60">60 fps — 全フレーム優先</option></select>
+            <p class="field-help">再生速度ではなく映像内の変化を追います。局面が欠けた動画は復元できないことがあります。</p>
+            <div class="box-fields"><label>X<input id="boxX" type="number" min="0" max="1" step="0.001"></label><label>Y<input id="boxY" type="number" min="0" max="1" step="0.001"></label><label>幅<input id="boxWidth" type="number" min="0.05" max="1" step="0.001"></label><label>高さ<input id="boxHeight" type="number" min="0.05" max="1" step="0.001"></label></div>
+            <p class="field-help">画像全体を1とした比率。プレビュー上でもドラッグできます。</p>
+            <div class="button-row"><button id="saveProfile" class="secondary compact">設定を保存</button><button id="loadProfile" class="secondary compact">設定を読込</button><input id="profileFile" type="file" accept="application/json,.json" hidden></div>
+          </details>
+        </section>
+        <button id="analyzeButton" class="primary" disabled><span>棋譜を起こす</span><span>→</span></button>
+        <button id="resumeButton" class="secondary" hidden>途中から再開</button>
+        <p class="privacy-note">ローカル起動中はこのPCで処理します。<br>クラウド利用時は接続先サーバーで処理します。</p>
+      </aside>
+      <section class="preview-panel">
+        <div class="panel-heading"><h2>盤面プレビュー</h2><span id="frameLabel" class="mono">— / —</span></div>
+        <div class="preview-stage" id="previewStage">
+          <div id="emptyPreview" class="empty-preview"><div class="empty-board" aria-hidden="true"><span>歩</span></div><h3>まずは、一局を選んでください。</h3><p>動画を読み込むと、ここに盤面が表示されます。</p></div>
+          <canvas id="previewCanvas" hidden aria-label="盤面の左上から右下へドラッグして範囲を指定" tabindex="0"></canvas>
+          <video id="player" controls playsinline hidden></video>
+          <div class="preview-badge" id="previewBadge" hidden><span></span>緑の枠内が読み取り範囲</div>
+        </div>
+        <div class="frame-controls"><input id="timeline" type="range" min="0" max="1" value="0" step="0.05" disabled aria-label="プレビュー時刻"><div class="frame-toolbar"><div class="button-row"><button id="prevFrame" class="icon-button" aria-label="0.1秒戻る" disabled>−0.1秒</button><button id="nextFrame" class="icon-button" aria-label="0.1秒進む" disabled>＋0.1秒</button></div><input id="previewTime" type="number" min="0" step="0.05" value="0" aria-label="表示時刻（秒）" disabled><button id="togglePlayer" class="text-button" disabled>動画を再生 ▷</button></div></div>
+        <p class="canvas-tip">盤の<strong>外枠の左上から右下</strong>までドラッグ。持ち駒・時計は含めません。</p>
+        <div id="progressArea" class="analysis-progress" hidden><div><strong id="progressMessage">解析を準備しています</strong><button id="cancelButton" class="text-button">停止</button></div><progress id="analysisProgress" max="1" value="0"></progress><p id="progressDetail" class="mono"></p></div>
+      </section>
+      <section class="result-panel"><div class="section-title result-title"><span class="step-number">03</span><h2>指し手を確かめる</h2><span id="moveCount" class="count-badge">0 手</span></div>
+        <div id="emptyResult" class="empty-result"><span class="record-symbol">棋</span><h3>ここに棋譜が並びます。</h3><p>解析後は一手を選んで映像と照合。<br>あいまいな箇所を確認して保存します。</p></div>
+        <div id="resultBody" hidden>
+          <div id="resultSummary" class="result-summary"></div>
+          <div id="boardView" class="board-view" aria-label="選択した手の局面"></div>
+          <p id="handsView" class="hands-view"></p>
+          <div id="moveList" class="move-list" aria-label="認識した指し手"></div>
+          <div id="warnings" class="warnings"></div>
+          <div class="export-row"><a id="downloadKif" class="primary" href="#" download="record.kif">KIFを保存 ↓</a><button id="downloadJson" class="secondary" title="時刻・設定を含むJSON">JSON</button></div>
+          <details class="edit-details"><summary>指し手を修正する</summary><p class="field-help">USI形式で1行に1手（例：7g7f、B*5e、2b8h+）。保存時に全手の合法性を確認します。</p><label class="field-label" for="editMoves">指し手（USI）</label><textarea id="editMoves" rows="7" spellcheck="false"></textarea><label class="field-label" for="termination">映像で確認した終局理由</label><select id="termination"><option value="">未確認</option><option>投了</option><option>中断</option><option>千日手</option><option>持将棋</option><option>詰み</option><option>切れ負け</option><option>反則勝ち</option><option>反則負け</option><option>入玉勝ち</option></select><button id="saveEdits" class="secondary">修正を保存</button></details>
+          <details class="compare-details"><summary>正解の棋譜と答え合わせ</summary><p class="field-help">KIF / TXT（UTF-8・Shift-JIS）。正解棋譜は比較だけに使い、動画の認識には使いません。</p><label class="secondary file-button">棋譜を選択<input id="referenceFile" type="file" accept=".kif,.kifu,.txt" class="visually-hidden"></label><div id="comparison" aria-live="polite"></div></details>
+        </div>
+      </section>
+    </div>
+    <footer><span>一局の記録を、次の一局へ。</span><span>推定結果は映像と照合してください。途中局面・実物の将棋盤は対象外です。</span></footer>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

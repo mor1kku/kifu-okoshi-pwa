@@ -1,0 +1,15 @@
+{
+  "name": "kifu-okoshi",
+  "private": true,
+  "scripts": {
+    "test": "node --test tests/frontend.test.cjs tests/pwa.test.cjs",
+    "build": "node scripts/build.mjs",
+    "check": "node --check frontend/app.js",
+    "prepare:pwa": "node scripts/pwa.mjs prepare",
+    "build:pwa": "node scripts/pwa.mjs build"
+  },
+  "dependencies": {
+    "mediabunny": "1.64.0",
+    "pyodide": "314.0.7"
+  }
+}
