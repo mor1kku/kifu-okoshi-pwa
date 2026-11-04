@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#223c34">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>画面共有の診断 — 棋譜おこし</title>
+  <link rel="stylesheet" href="./style.css">
+  <style>
+    body{font-size:15px}main{max-width:680px;padding:28px 20px 50px}h1{font-size:28px;letter-spacing:1px;line-height:1.5;margin:18px 0}h2{font-size:18px;margin:0 0 12px}.back{font-size:14px;text-decoration:underline}.eyebrow{margin-top:30px}.card{padding:24px;background:var(--white);border:1px solid var(--line);border-radius:5px;margin:22px 0}.steps{padding-left:23px;margin:16px 0}.steps li{padding:4px 0}.button-row{flex-wrap:wrap;margin:16px 0}.primary,.secondary{font-size:15px;min-height:48px}.primary{flex:1}p{margin:12px 0}.help{color:#606e61;font-size:13px}video{display:block;width:100%;max-height:180px;background:#1b2823;object-fit:contain;margin-top:18px}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:20px 0}.metrics dt{font-size:12px;color:#606e61}.metrics dd{margin:3px 0;font-size:25px;font-family:Georgia,serif;font-variant-numeric:tabular-nums}#status{padding:14px;border-left:3px solid var(--green);background:#edf2e6}#resultText{white-space:pre-wrap;font:inherit;font-size:13px;line-height:1.9;overflow-wrap:anywhere}#saveNote{color:#99522f}button:focus-visible,a:focus-visible{outline:3px solid var(--accent)}
+  </style>
+</head>
+<body>
+<main>
+  <a class="back" href="./">← 棋譜おこしに戻る</a>
+  <p class="eyebrow">iPhone / 画面共有の診断 v1</p>
+  <h1>別アプリの動画を、<br>読み取れるか。</h1>
+  <p>別アプリで動画を見ている間も、このページが映像を読み取れるかを調べます。<strong>このページでは棋譜を作りません。</strong></p>
+  <section class="card" aria-labelledby="stepsTitle">
+    <h2 id="stepsTitle">20秒ほど、動画を見て戻る</h2>
+    <ol class="steps">
+      <li>Safariでこのページを開き、「画面共有を試す」を押します。表示された選択画面で共有する画面を選びます。</li>
+      <li>共有が始まったら、見たい動画のアプリへ切り替えます。</li>
+      <li>動きのある動画を20秒ほど再生してから、Safariのこのページに戻ります。</li>
+      <li>「診断を終了」を押し、「結果をコピー」の内容をチャットへ貼り付けてください。</li>
+    </ol>
+    <p class="help">映像・音声は外部に送信しません。音声の取得と録画保存も行いません。端末内に保存するのは、更新回数・時刻・ブラウザー情報などの診断結果だけです。</p>
+    <p id="status" role="status" aria-live="polite">利用できる機能を確認しています…</p>
+    <div class="button-row"><button id="startCapture" class="primary" disabled>画面共有を試す</button><button id="stopCapture" class="secondary" disabled>診断を終了</button></div>
+    <video id="capturePreview" muted autoplay playsinline hidden aria-label="共有中の画面"></video>
+    <dl class="metrics"><div><dt>映像を読み取った回数</dt><dd id="sampleCount">0</dd></div><div><dt>ページ非表示中の映像変化</dt><dd id="hiddenChanges">0</dd></div></dl>
+    <p class="help">画面共有が始まらない場合も、その結果をコピーできます。診断中は画面をロックしないでください。</p>
+  </section>
+  <section class="card" aria-labelledby="resultTitle">
+    <h2 id="resultTitle">診断結果</h2>
+    <p id="resultText">まだ診断していません。</p>
+    <div class="button-row"><button id="copyResult" class="secondary" disabled>結果をコピー</button><button id="saveResult" class="secondary" disabled>JSONを保存</button></div>
+    <p id="saveNote" class="help" role="status"></p>
+    <p class="help">映像が更新されても、棋譜の精度・解析速度や長時間の動作を保証する結果ではありません。停止した場合も、この診断で使った読み取り方法についての結果です。</p>
+  </section>
+  <noscript>診断にはJavaScriptを有効にしてください。</noscript>
+  <script type="module" src="./screen-share-test.js"></script>
+</main>
+</body>
+</html>

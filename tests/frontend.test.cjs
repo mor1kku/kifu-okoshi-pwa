@@ -40,6 +40,18 @@ test('解析中と未保存の棋譜がある間はアプリ更新で再読み�
   app.dispatch('kifu-update-finished'); assert.equal(app.state.busy, false);
 });
 
+test('画面共有診断へ移動する前に解析中・未保存の指し手を保護する', () => {
+  let ready = true, refused = 0;
+  const app = harness(null, { request: async () => new Promise(() => {}), canUpdate: () => ready });
+  const click = () => app.element('screenShareTestLink').listeners.click({ preventDefault: () => refused++ });
+  app.setBusy(true); click(); assert.equal(refused, 1);
+  app.setBusy(false); ready = false; click(); assert.equal(refused, 2);
+  ready = true; app.state.result = { moves: [], termination: null };
+  app.element('editMoves').value = '7g7f'; app.element('termination').value = ''; click(); assert.equal(refused, 3);
+  app.element('editMoves').value = ''; click(); assert.equal(refused, 3);
+  assert.equal(app.state.busy, false);
+});
+
 test('結果の手数を完了欄に使い、自動再開時には進捗の取得を再開する', async () => {
   let reads = 0;
   const settings = { board: { x: 0, y: 0, width: 1, height: 1 }, profile: 'wars', orientation: 'gote', sampleFps: 12 };

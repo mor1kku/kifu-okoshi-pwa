@@ -30,6 +30,7 @@ def copy(source, destination):
 
 for path in (rootDir / 'pwa').glob('*.js'):
     copy(path, path.name)
+copy(rootDir / 'pwa/screen-share-test.html', 'screen-share-test.html')
 for name in ('app.js', 'style.css'):
     copy(rootDir / 'frontend' / name, name)
 for name in runtimeFiles:
@@ -68,10 +69,11 @@ html = (rootDir / 'frontend/index.html').read_text(encoding='utf-8')
 html = html.replace('href="/style.css"', 'href="./style.css"').replace('href="/"', 'href="./"').replace('src="/app.js"', 'src="./bootstrap.js"')
 html = html.replace('</head>', '<link rel="manifest" href="./manifest.webmanifest">\n<link rel="icon" href="./icons/icon-192.png">\n<link rel="apple-touch-icon" href="./icons/icon-192.png">\n<meta name="apple-mobile-web-app-capable" content="yes">\n</head>')
 html = html.replace('試作版 / 平手対応', '端末内解析')
-html = html.replace('動画から棋譜へ <span class="version">', 'v1.3.0 <span class="version">')
+html = html.replace('動画から棋譜へ <span class="version">', 'v1.3.1 <span class="version">')
 html = html.replace('ローカル起動中はこのPCで処理します。<br>クラウド利用時は接続先サーバーで処理します。',
                     '動画はこの端末内で処理し、送信しません。<br>画面を閉じると一時停止し、戻ると自動で再開します。<br>アプリが終了した場合は、同じ動画を選んで途中から再開できます。<br>初回は解析エンジンをダウンロードします。')
 html = html.replace('<footer>', '<section class="step"><h2>iPhoneで使う</h2><p>Safariの共有メニューから「ホーム画面に追加」。初回は通信できる場所で準備してください。</p><div class="button-row"><button id="offlineButton" class="secondary">オフライン用にアプリを保存</button><button id="updateButton" class="secondary">アプリの更新を確認</button></div><p class="field-help">更新すると画面を開き直します。保存済みの棋譜は残ります。現在のアプリの版は画面上部、結果を作った版は結果欄で確認できます。</p><p class="field-help">動画の原本は「写真」または「ファイル」に保存してください。途中から再開する場合は同じ動画を選び直します。端末の保存領域が消去される場合に備え、棋譜はKIFでも保存してください。</p></section><footer>')
+html = html.replace('<footer>', '<p class="field-help"><a id="screenShareTestLink" class="secondary" href="./screen-share-test.html">別アプリの画面共有を診断する</a> · Safariで開いて確認できます。診断では棋譜を作りません。</p><footer>')
 (outputDir / 'index.html').write_text(html, encoding='utf-8')
 profiles = [json.loads(path.read_text(encoding='utf-8')) for path in sorted((rootDir / 'profiles').glob('*.json'))]
 (outputDir / 'profiles.json').write_text(json.dumps(profiles, ensure_ascii=False), encoding='utf-8')
@@ -114,7 +116,7 @@ for size in (192, 512):
     'NumPy and OpenCV: licenses are included in the corresponding wheel files; '
     'build recipes: https://github.com/pyodide/pyodide-recipes\n', encoding='utf-8')
 sourceFiles = [rootDir / name for name in ('LICENSE', '.gitignore', '.dockerignore', 'Dockerfile', 'compose.yaml', 'start.ps1', 'package.json', 'package-lock.json', 'requirements.txt', 'requirements-dev.txt', 'pytest.ini', '.github/workflows/pages.yml')]
-for directory, pattern in (('backend', '*.py'), ('frontend', '*'), ('pwa', '*.js'), ('profiles', '*.json'), ('scripts', '*.py'), ('scripts', '*.mjs'), ('tests', '*.py'), ('tests', '*.cjs'), ('licenses', '*.txt')):
+for directory, pattern in (('backend', '*.py'), ('frontend', '*'), ('pwa', '*.js'), ('pwa', '*.html'), ('profiles', '*.json'), ('scripts', '*.py'), ('scripts', '*.mjs'), ('tests', '*.py'), ('tests', '*.cjs'), ('licenses', '*.txt')):
     sourceFiles.extend(path for path in (rootDir / directory).glob(pattern) if path.is_file())
 with zipfile.ZipFile(outputDir / 'corresponding-source.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
     readme = rootDir / 'README-PWA.md'

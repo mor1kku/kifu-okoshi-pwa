@@ -2,7 +2,7 @@ const base = self.registration.scope;
 const cachePrefix = `kifu-pwa:${new URL(base).pathname}:`;
 const cacheName = `${cachePrefix}__BUILD_ID__`;
 const url = path => new URL(path, base).href;
-const shell = ['index.html', 'style.css', 'app.js', 'bootstrap.js', 'updates.js', 'local-engine.js', 'storage.js', 'worker.js', 'profiles.json', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'asset-manifest.json'];
+const shell = ['index.html', 'style.css', 'app.js', 'bootstrap.js', 'updates.js', 'local-engine.js', 'storage.js', 'worker.js', 'profiles.json', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png', 'asset-manifest.json', 'screen-share-test.html', 'screen-share-test.js'];
 self.addEventListener('install', event => {
   event.waitUntil((async () => {
     const response = await fetch(url('asset-manifest.json'), { cache: 'no-store' });
@@ -27,7 +27,8 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET' || !event.request.url.startsWith(base)) return;
   event.respondWith((async () => {
-    const key = event.request.mode === 'navigate' ? url('index.html') : event.request;
+    const page = new URL(event.request.url).pathname === new URL(url('screen-share-test.html')).pathname ? 'screen-share-test.html' : 'index.html';
+    const key = event.request.mode === 'navigate' ? url(page) : event.request;
     const cache = await caches.open(cacheName);
     const cached = await cache.match(key); if (cached) return cached;
     const response = await fetch(event.request);

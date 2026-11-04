@@ -260,6 +260,13 @@ $('cancelButton').addEventListener('click', handle(async () => {
 }));
 if (localEngine) {
   let updateLocked = false;
+  $('screenShareTestLink')?.addEventListener('click', event => {
+    if (state.busy || localEngine.canUpdate?.() === false || hasUnsavedMoves()) {
+      event.preventDefault();
+      notice('解析・探索を停止し、指し手の修正を保存してから診断を開いてください。', true);
+      $('notice').scrollIntoView?.({ block: 'nearest' });
+    }
+  });
   document.addEventListener('kifu-update-request', event => {
     const busy = state.busy || localEngine.canUpdate?.() === false;
     const edited = state.result && ($('editMoves').value.trim() !== state.result.moves.map(row => row.usi).join('\n') || $('termination').value !== (state.result.termination || ''));
