@@ -80,7 +80,10 @@ final class CaptureSession: ObservableObject {
         let newStream = SCStream(filter: filter, configuration: configuration, delegate: observer)
         stream = newStream
         sink.onTimeout = { [weak self] in
-            Task { @MainActor in await self?.stop(state: "時間上限", message: "120秒の試験を終了しました。") }
+            Task { @MainActor in
+                guard let self, self.generation == expected else { return }
+                await self.stop(state: "時間上限", message: "120秒の試験を終了しました。")
+            }
         }
         sink.setBackground(inBackground)
         do {
@@ -102,7 +105,7 @@ final class CaptureSession: ObservableObject {
 
     func setBackground(_ background: Bool) {
         inBackground = background
-        if capturing { sink?.setBackground(background) }
+        if stream != nil && !stopping { sink?.setBackground(background) }
         // 非表示でもSCStreamと専用の受信キューを維持する。
         refresh()
     }
@@ -110,7 +113,11 @@ final class CaptureSession: ObservableObject {
     func refresh() {
         if let sink { report = sink.snapshot() }
         if busy && !stopping, let sink, sink.elapsed >= 120 {
-            Task { await stop(state: "時間上限", message: "120秒の試験を終了しました。") }
+            let expected = generation
+            Task {
+                guard generation == expected else { return }
+                await stop(state: "時間上限", message: "120秒の試験を終了しました。")
+            }
         }
     }
 
@@ -127,6 +134,7 @@ final class CaptureSession: ObservableObject {
     func stop(state: String = "終了", message: String? = nil) async {
         guard !stopping else { return }
         stopping = true
+        status = "終了しています"
         generation = UUID()
         capturing = false
         var detail = message

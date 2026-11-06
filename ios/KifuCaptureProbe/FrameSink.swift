@@ -33,7 +33,7 @@ struct ProbeReport: Codable {
                      "状態：\(state) / iOS \(systemVersion)",
                      "署名プロファイル：\(profileInspection)",
                      "全体：\(seconds(elapsedSeconds))秒 / コールバック \(metrics.callbacks)回 / 比較用の画像 \(metrics.observations.count)枚",
-                     "画像サイズ：\(frameWidth) × \(frameHeight)"]
+                     "画像サイズ：\(frameWidth) × \(frameHeight) / 画素形式：\(pixelFormat) / 無効画像：\(metrics.invalidImages)回"]
         for (index, interval) in intervals.enumerated() {
             lines.append("別アプリ区間\(index + 1)：評価\(seconds(interval.evaluatedSeconds))秒、読取\(interval.samples)回、変化\(interval.changes)回、単色\(interval.flatSamples)回、最大読取間隔\(seconds(interval.maxSampleGap))秒、最大変化間隔\(seconds(interval.maxChangeGap))秒")
         }
@@ -86,7 +86,9 @@ final class FrameSink: NSObject, SCStreamOutput, @unchecked Sendable {
         report.elapsedSeconds = elapsed
         report.metrics.setBackground(false, at: elapsed)
         report.state = state
-        report.message = message
+        if let message {
+            report.message = [report.message, message].compactMap { $0 }.joined(separator: " / ")
+        }
         finished = true
         previousPixels = nil
         saveLocked()
