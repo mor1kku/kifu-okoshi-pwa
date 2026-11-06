@@ -4,6 +4,8 @@
 
 公開先: https://mor1kku.github.io/kifu-okoshi-pwa/
 
+別アプリで動画を見ながら棋譜を起こすためのiPhone専用試作は [ios/README.md](ios/README.md) にまとめています。Macを所有せずにGitHub Actionsでビルドする構成です。初版は画面取得の診断専用で、無料署名で必要な権限が使えるか・実機で取得できるかは未確認です。
+
 ## iPhoneで使う
 
 1. Safariで公開先を開き、共有メニューから「ホーム画面に追加」します。

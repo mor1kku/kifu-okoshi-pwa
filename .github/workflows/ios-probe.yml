@@ -1,0 +1,68 @@
+name: Build iPhone capture probe
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-probe.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ios-capture-probe
+  cancel-in-progress: true
+jobs:
+  build:
+    # 公開リポジトリ向けの標準runner。大型の有料runnerは使用しない。
+    runs-on: xcode-27
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check toolchain
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+          swift --version
+      - name: Test background metrics
+        run: swift test --package-path ios/ProbeCore
+      - name: Build iPhone app
+        run: |
+          set -o pipefail
+          xcodebuild -project ios/KifuCaptureProbe.xcodeproj \
+            -scheme KifuCaptureProbe -configuration Release \
+            -destination 'generic/platform=iOS' -derivedDataPath build-ios \
+            CODE_SIGNING_ALLOWED=NO build | tee ios-build.log
+      - name: Package IPA for personal re-signing
+        run: |
+          set -euo pipefail
+          mkdir -p ios-artifact/Payload
+          cp -R build-ios/Build/Products/Release-iphoneos/KifuCaptureProbe.app ios-artifact/Payload/
+          cp ios/APPLE-SAMPLE-LICENSE.txt ios-artifact/Payload/KifuCaptureProbe.app/
+          codesign --force --sign - --timestamp=none \
+            --entitlements ios/KifuCaptureProbe/KifuCaptureProbe.entitlements \
+            ios-artifact/Payload/KifuCaptureProbe.app
+          codesign --verify --strict --verbose=2 ios-artifact/Payload/KifuCaptureProbe.app
+          codesign --display --entitlements :- ios-artifact/Payload/KifuCaptureProbe.app > ios-artifact/requested-entitlements.plist
+          python3 ios/verify_bundle.py ios-artifact/Payload/KifuCaptureProbe.app ios-artifact/requested-entitlements.plist
+          cd ios-artifact
+          zip -qry KifuCaptureProbe-0.1.0-resign.ipa Payload
+          shasum -a 256 KifuCaptureProbe-0.1.0-resign.ipa > SHA256SUMS.txt
+          cp ../ios/README.md README.md
+          cp ../ios/APPLE-SAMPLE-LICENSE.txt APPLE-SAMPLE-LICENSE.txt
+          printf '%s\n' '${{ github.sha }}' > SOURCE-COMMIT.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KifuCaptureProbe-0.1.0-resign
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            ios-artifact/*.ipa
+            ios-artifact/*.txt
+            ios-artifact/*.md
+            ios-artifact/*.plist
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: ios-build-log
+          retention-days: 7
+          path: ios-build.log
