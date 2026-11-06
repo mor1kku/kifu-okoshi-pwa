@@ -75,9 +75,7 @@ final class CaptureSession: ObservableObject {
         let configuration = SCStreamConfiguration()
         configuration.width = 640
         configuration.height = 1136
-        configuration.minimumFrameInterval = CMTime(value: 1, timescale: 10)
-        configuration.pixelFormat = kCVPixelFormatType_32BGRA
-        configuration.queueDepth = 3
+        // iOSではフレーム間隔・画素形式を指定できないため、受信側で間引く。
         configuration.capturesAudio = false
         let newStream = SCStream(filter: filter, configuration: configuration, delegate: observer)
         stream = newStream

@@ -15,6 +15,7 @@ struct ProbeReport: Codable {
     let profileInspection: String
     var frameWidth = 0
     var frameHeight = 0
+    var pixelFormat: UInt32 = 0
     var metrics = ProbeMetrics()
     var intervals: [IntervalSummary] = []
 
@@ -138,24 +139,43 @@ final class FrameSink: NSObject, SCStreamOutput, @unchecked Sendable {
         }
         report.frameWidth = width
         report.frameHeight = height
-        guard CVPixelBufferGetPixelFormatType(image) == kCVPixelFormatType_32BGRA,
-              CVPixelBufferLockBaseAddress(image, .readOnly) == kCVReturnSuccess else {
-            report.message = "画像の形式またはメモリーへのアクセスを確認できませんでした。"
+        let format = CVPixelBufferGetPixelFormatType(image)
+        report.pixelFormat = format
+        let isBGRA = format == kCVPixelFormatType_32BGRA
+        let isLuma8 = format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange || format == kCVPixelFormatType_420YpCbCr8BiPlanarFullRange
+        let isLuma10 = format == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange || format == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange
+        guard isBGRA || isLuma8 || isLuma10 else {
+            report.message = "未対応の画素形式：\(format)。画面は受信しましたが比較できません。"
+            if time - lastSave >= 2 { lastSave = time; saveLocked() }
+            lock.unlock()
+            return
+        }
+        guard CVPixelBufferLockBaseAddress(image, .readOnly) == kCVReturnSuccess else {
+            report.message = "画像メモリーへのアクセスを確認できませんでした。"
             lock.unlock()
             return
         }
         var pixels: [UInt8] = []
-        if let base = CVPixelBufferGetBaseAddress(image), width > 0, height > 0 {
+        let planar = !isBGRA && CVPixelBufferGetPlaneCount(image) > 0
+        let base = planar ? CVPixelBufferGetBaseAddressOfPlane(image, 0) : CVPixelBufferGetBaseAddress(image)
+        if let base, width > 0, height > 0 {
             let bytes = base.assumingMemoryBound(to: UInt8.self)
-            let stride = CVPixelBufferGetBytesPerRow(image)
+            let stride = planar ? CVPixelBufferGetBytesPerRowOfPlane(image, 0) : CVPixelBufferGetBytesPerRow(image)
             pixels.reserveCapacity(48 * 72)
             // 通知バーなどの影響を減らすため、中央80%だけを粗く比較する。
             for row in 0..<72 {
                 let y = min(height - 1, Int(Double(height) * (0.1 + 0.8 * (Double(row) + 0.5) / 72)))
                 for column in 0..<48 {
                     let x = min(width - 1, Int(Double(width) * (0.1 + 0.8 * (Double(column) + 0.5) / 48)))
-                    let offset = y * stride + x * 4
-                    pixels.append(UInt8((Int(bytes[offset]) + 2 * Int(bytes[offset + 1]) + Int(bytes[offset + 2])) / 4))
+                    if isBGRA {
+                        let offset = y * stride + x * 4
+                        pixels.append(UInt8((Int(bytes[offset]) + 2 * Int(bytes[offset + 1]) + Int(bytes[offset + 2])) / 4))
+                    } else if isLuma10 {
+                        let value = base.advanced(by: y * stride).assumingMemoryBound(to: UInt16.self)[x]
+                        pixels.append(UInt8(value >> 8))
+                    } else {
+                        pixels.append(bytes[y * stride + x])
+                    }
                 }
             }
         }
